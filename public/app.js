@@ -57,6 +57,19 @@
     directForm: document.getElementById('directForm'),
     joinModal: document.getElementById('joinModal'),
     joinForm: document.getElementById('joinForm'),
+    memberModal: document.getElementById('memberModal'),
+    memberProfileAvatar: document.getElementById('memberProfileAvatar'),
+    memberProfileName: document.getElementById('memberProfileName'),
+    memberProfileStatus: document.getElementById('memberProfileStatus'),
+    memberProfilePresence: document.getElementById('memberProfilePresence'),
+    memberProfileBio: document.getElementById('memberProfileBio'),
+    memberProfileMessageBtn: document.getElementById('memberProfileMessageBtn'),
+    memberProfileCopyBtn: document.getElementById('memberProfileCopyBtn'),
+    mediaViewer: document.getElementById('mediaViewer'),
+    mediaViewerImage: document.getElementById('mediaViewerImage'),
+    mediaViewerVideo: document.getElementById('mediaViewerVideo'),
+    mediaViewerCaption: document.getElementById('mediaViewerCaption'),
+    mediaViewerDownload: document.getElementById('mediaViewerDownload'),
     toast: document.getElementById('toast')
   };
 
@@ -84,6 +97,8 @@
     recording: null,
     recordingTimer: null,
     supportsMediaRecording: false,
+    activeMember: null,
+    activeMediaAttachment: null,
     profileDraft: {
       avatarAttachmentId: null,
       avatarUrl: null,
@@ -252,16 +267,28 @@
     renderSearchResults();
   }
 
+  async function openDirectChat(identifier, options = {}) {
+    const value = typeof identifier === 'string' ? identifier.trim() : '';
+    if (!value) throw new Error('Укажите логин или ID собеседника');
+    const data = await apiRequest('/api/conversations/direct', {
+      method: 'POST',
+      body: JSON.stringify({ username: value })
+    });
+    if (data?.conversation) {
+      upsertConversations([data.conversation]);
+      if (options.activate !== false) {
+        openConversation(data.conversation.id);
+      }
+      return data.conversation;
+    }
+    throw new Error('Не удалось открыть чат');
+  }
+
   async function startDirectChatFromSearch(user) {
     try {
-      const data = await apiRequest('/api/conversations/direct', {
-        method: 'POST',
-        body: JSON.stringify({ username: user.publicId || user.username })
-      });
+      await openDirectChat(user.publicId || user.username);
       resetSearchInput();
       closeModal(elements.directModal);
-      upsertConversations([data.conversation]);
-      openConversation(data.conversation.id);
       showToast('Личный чат открыт', 'success');
     } catch (error) {
       showToast(error.message || 'Не удалось открыть чат', 'error');
@@ -375,6 +402,8 @@
     state.currentConversationId = null;
     state.searchResults = [];
     state.searchQuery = '';
+    state.activeMember = null;
+    state.activeMediaAttachment = null;
     if (state.searchTimer) {
       clearTimeout(state.searchTimer);
       state.searchTimer = null;
@@ -389,6 +418,7 @@
       state.socket = null;
     state.socketErrorShown = false;
     }
+    closeMediaViewer();
     localStorage.removeItem('pink:token');
     localStorage.removeItem('pink:user');
     if (elements.conversationFilter) {
@@ -560,11 +590,15 @@
   }
 
   function closeModal(modal) {
+    if (!modal) return;
     modal.classList.add('hidden');
+    if (modal === elements.memberModal) {
+      state.activeMember = null;
+    }
   }
 
   function closeAllModals() {
-    [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal].forEach((modal) => {
+    [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal, elements.memberModal].forEach((modal) => {
       if (modal) modal.classList.add('hidden');
     });
   }
@@ -575,7 +609,7 @@
     });
   });
 
-  [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal].forEach((modal) => {
+  [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal, elements.memberModal].forEach((modal) => {
     modal?.addEventListener('click', (event) => {
       if (event.target === modal) closeModal(modal);
     });
@@ -712,13 +746,11 @@
         showToast('Укажите логин или ID собеседника', 'error');
         return;
       }
-      const data = await apiRequest('/api/conversations/direct', {
-        method: 'POST',
-        body: JSON.stringify({ username: identifier })
-      });
+      const conversation = await openDirectChat(identifier);
       closeModal(elements.directModal);
-      upsertConversations([data.conversation]);
-      openConversation(data.conversation.id);
+      if (conversation) {
+        showToast('Личный чат открыт', 'success');
+      }
     } catch (error) {
       showToast(error.message || 'Не удалось открыть чат', 'error');
     }
@@ -744,6 +776,55 @@
     } catch (error) {
       showToast(error.message || 'Не удалось присоединиться', 'error');
     }
+  });
+
+  if (elements.memberProfileMessageBtn) {
+    elements.memberProfileMessageBtn.addEventListener('click', async () => {
+      const member = state.activeMember;
+      if (!member || member.id === state.user?.id) return;
+      try {
+        await openDirectChat(member.publicId || member.username);
+        closeModal(elements.memberModal);
+        showToast('Личный чат открыт', 'success');
+      } catch (error) {
+        showToast(error.message || 'Не удалось открыть чат', 'error');
+      }
+    });
+  }
+
+  if (elements.memberProfileCopyBtn) {
+    elements.memberProfileCopyBtn.addEventListener('click', () => {
+      const value = elements.memberProfileCopyBtn.dataset.copyValue || '';
+      if (!value) return;
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard
+          .writeText(value)
+          .then(() => showToast('ID скопирован', 'success'))
+          .catch(() => showToast('Не удалось скопировать', 'error'));
+      } else {
+        showToast('Копирование недоступно', 'error');
+      }
+    });
+  }
+
+  if (elements.mediaViewer) {
+    const mediaContent = elements.mediaViewer.querySelector('.media-viewer-content');
+    elements.mediaViewer.addEventListener('click', (event) => {
+      if (event.target === elements.mediaViewer || event.target.dataset.mediaClose !== undefined) {
+        closeMediaViewer();
+      }
+    });
+    mediaContent?.addEventListener('click', (event) => {
+      if (event.target.dataset.mediaClose) return;
+      event.stopPropagation();
+    });
+  }
+
+  document.querySelectorAll('[data-media-close]').forEach((node) => {
+    node.addEventListener('click', (event) => {
+      event.preventDefault();
+      closeMediaViewer();
+    });
   });
 
   elements.conversationFilter.addEventListener('input', (event) => {
@@ -846,6 +927,54 @@
     const lastSeen = presence?.lastSeen || member.lastSeen;
     if (lastSeen) return `Был в сети ${formatDate(lastSeen)}`;
     return member.statusMessage || 'Не в сети';
+  }
+
+  function openMemberProfile(member) {
+    if (!member || !elements.memberModal) return;
+    state.activeMember = member;
+    const name = member.displayName || member.username || 'Участник';
+    const status = member.statusMessage || `@${member.username || 'неизвестно'}`;
+    const presenceText = buildPresence(member);
+    const bio = typeof member.bio === 'string' ? member.bio.trim() : '';
+
+    if (elements.memberProfileAvatar) {
+      setAvatar(elements.memberProfileAvatar, {
+        url: member.avatarUrl,
+        color: member.avatarColor,
+        text: initials(name)
+      });
+    }
+
+    if (elements.memberProfileName) {
+      elements.memberProfileName.textContent = name;
+    }
+    if (elements.memberProfileStatus) {
+      elements.memberProfileStatus.textContent = status;
+      elements.memberProfileStatus.classList.toggle('muted', !member.statusMessage);
+    }
+    if (elements.memberProfilePresence) {
+      elements.memberProfilePresence.textContent = presenceText;
+    }
+    if (elements.memberProfileBio) {
+      elements.memberProfileBio.textContent = bio || 'У этого участника пока нет описания.';
+      elements.memberProfileBio.classList.toggle('muted', !bio);
+    }
+
+    const isSelf = member.id === state.user?.id;
+    if (elements.memberProfileMessageBtn) {
+      elements.memberProfileMessageBtn.disabled = isSelf;
+      elements.memberProfileMessageBtn.textContent = isSelf ? 'Это вы' : 'Написать';
+      elements.memberProfileMessageBtn.title = isSelf ? 'Нельзя написать самому себе' : 'Открыть личный чат';
+    }
+
+    if (elements.memberProfileCopyBtn) {
+      const copyValue = member.publicId || member.username || '';
+      elements.memberProfileCopyBtn.dataset.copyValue = copyValue;
+      elements.memberProfileCopyBtn.disabled = !copyValue;
+      elements.memberProfileCopyBtn.title = copyValue ? 'Скопировать публичный ID участника' : 'ID недоступен';
+    }
+
+    openModal(elements.memberModal);
   }
 
   function renderConversationList() {
@@ -968,6 +1097,16 @@
       presence.textContent = buildPresence(member);
       info.append(presence);
       item.append(avatar, info);
+      item.dataset.memberId = member.id;
+      item.tabIndex = 0;
+  item.setAttribute('role', 'button');
+      item.addEventListener('click', () => openMemberProfile(member));
+      item.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openMemberProfile(member);
+        }
+      });
       fragment.append(item);
     });
     elements.memberList.append(fragment);
@@ -1510,6 +1649,118 @@
     return '📎';
   }
 
+  function decorateMediaPreview(node, attachment, kind) {
+    if (!node || !attachment?.url) return node;
+    const mediaKind = kind || detectAttachmentKind(attachment);
+    if (mediaKind !== 'image' && !attachment.isCircle) return node;
+    if (attachment.id) {
+      node.dataset.attachmentId = String(attachment.id);
+    }
+    node.dataset.attachmentUrl = attachment.url;
+    if (attachment.originalName) {
+      node.dataset.attachmentName = attachment.originalName;
+    }
+    node.dataset.attachmentKind = mediaKind;
+    if (attachment.isCircle) {
+      node.dataset.attachmentCircle = 'true';
+    }
+    node.classList.add('media-preview');
+    return node;
+  }
+
+  function findAttachmentByNode(message, node) {
+    if (!message?.attachments?.length || !node) return null;
+    const { attachmentId, attachmentUrl } = node.dataset;
+    return message.attachments.find((item) => {
+      if (attachmentId && String(item.id) === attachmentId) return true;
+      if (attachmentUrl && item.url === attachmentUrl) return true;
+      return false;
+    }) || null;
+  }
+
+  function openMediaViewer(attachment) {
+    if (!attachment?.url || !elements.mediaViewer) return;
+    state.activeMediaAttachment = attachment;
+    const viewer = elements.mediaViewer;
+    const kind = detectAttachmentKind(attachment);
+    const caption = attachment.originalName || (kind === 'image' ? 'Изображение' : 'Вложение');
+
+    if (elements.mediaViewerImage) {
+      elements.mediaViewerImage.classList.add('hidden');
+      elements.mediaViewerImage.src = '';
+      elements.mediaViewerImage.alt = '';
+    }
+    if (elements.mediaViewerVideo) {
+      elements.mediaViewerVideo.pause();
+      elements.mediaViewerVideo.classList.add('hidden');
+      elements.mediaViewerVideo.removeAttribute('src');
+      elements.mediaViewerVideo.removeAttribute('muted');
+      elements.mediaViewerVideo.removeAttribute('playsinline');
+      elements.mediaViewerVideo.loop = false;
+      elements.mediaViewerVideo.load();
+    }
+
+    const isVideo = kind === 'video';
+    if (isVideo && elements.mediaViewerVideo) {
+      elements.mediaViewerVideo.src = attachment.url;
+      if (attachment.isCircle) {
+        elements.mediaViewerVideo.setAttribute('playsinline', 'true');
+        elements.mediaViewerVideo.setAttribute('muted', 'true');
+        elements.mediaViewerVideo.loop = true;
+      } else {
+        elements.mediaViewerVideo.removeAttribute('muted');
+        elements.mediaViewerVideo.removeAttribute('playsinline');
+        elements.mediaViewerVideo.loop = false;
+      }
+      elements.mediaViewerVideo.classList.remove('hidden');
+      elements.mediaViewerVideo.load();
+    } else if (elements.mediaViewerImage) {
+      elements.mediaViewerImage.src = attachment.url;
+      elements.mediaViewerImage.alt = caption;
+      elements.mediaViewerImage.classList.remove('hidden');
+    }
+
+    if (elements.mediaViewerCaption) {
+      elements.mediaViewerCaption.textContent = caption;
+    }
+    if (elements.mediaViewerDownload) {
+      elements.mediaViewerDownload.href = attachment.url;
+      if (attachment.originalName) {
+        elements.mediaViewerDownload.setAttribute('download', attachment.originalName);
+      } else {
+        elements.mediaViewerDownload.setAttribute('download', 'media');
+      }
+    }
+
+    document.body.classList.add('media-viewer-open');
+    viewer.classList.remove('hidden');
+  }
+
+  function closeMediaViewer() {
+    if (!elements.mediaViewer) return;
+    if (elements.mediaViewerVideo) {
+      elements.mediaViewerVideo.pause();
+      elements.mediaViewerVideo.classList.add('hidden');
+      elements.mediaViewerVideo.removeAttribute('src');
+      elements.mediaViewerVideo.load();
+    }
+    if (elements.mediaViewerImage) {
+      elements.mediaViewerImage.classList.add('hidden');
+      elements.mediaViewerImage.src = '';
+      elements.mediaViewerImage.alt = '';
+    }
+    if (elements.mediaViewerCaption) {
+      elements.mediaViewerCaption.textContent = '';
+    }
+    if (elements.mediaViewerDownload) {
+      elements.mediaViewerDownload.removeAttribute('href');
+      elements.mediaViewerDownload.removeAttribute('download');
+    }
+    state.activeMediaAttachment = null;
+    elements.mediaViewer.classList.add('hidden');
+    document.body.classList.remove('media-viewer-open');
+  }
+
   function renderAttachmentNode(attachment) {
     if (!attachment) return null;
     if (!attachment.url) {
@@ -1527,7 +1778,7 @@
       img.alt = attachment.originalName || 'История';
       img.loading = 'lazy';
       wrapper.append(img);
-      return wrapper;
+      return decorateMediaPreview(wrapper, attachment, kind);
     }
     if (attachment.isCircle || kind === 'video') {
       const wrapper = document.createElement('div');
@@ -1543,7 +1794,7 @@
         video.loop = true;
       }
       wrapper.append(video);
-      return wrapper;
+      return attachment.isCircle ? decorateMediaPreview(wrapper, attachment, kind) : wrapper;
     }
     if (kind === 'audio') {
       const audio = document.createElement('audio');
@@ -1564,7 +1815,7 @@
       if (attachment.isCircle) {
         img.classList.add('attachment-circle');
       }
-      return img;
+      return decorateMediaPreview(img, attachment, kind);
     }
     const link = document.createElement('a');
     link.href = attachment.url;
@@ -1580,6 +1831,16 @@
     const messageId = Number(messageElement.dataset.messageId);
     const message = findMessage(messageId);
     if (!message) return;
+
+    const mediaNode = event.target.closest('.media-preview');
+    if (mediaNode) {
+      const attachment = findAttachmentByNode(message, mediaNode);
+      if (attachment) {
+        event.preventDefault();
+        openMediaViewer(attachment);
+        return;
+      }
+    }
 
     if (event.target.classList.contains('action-edit')) {
       const newContent = prompt('Изменить сообщение', message.content || '');
@@ -1658,6 +1919,24 @@
   elements.detailsCloseBtn.addEventListener('click', () => toggleDetails(false));
 
   window.addEventListener('resize', () => syncDetailsPanel());
+
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.key !== 'Escape') return;
+    if (elements.mediaViewer && !elements.mediaViewer.classList.contains('hidden')) {
+      closeMediaViewer();
+      return;
+    }
+    const activeModal = [
+      elements.memberModal,
+      elements.profileModal,
+      elements.groupModal,
+      elements.directModal,
+      elements.joinModal
+    ].find((modal) => modal && !modal.classList.contains('hidden'));
+    if (activeModal) {
+      closeModal(activeModal);
+    }
+  });
 
   function desiredPanelState(force) {
     if (typeof force === 'boolean') return force;
@@ -1767,6 +2046,12 @@
 
   function applyPresenceUpdate({ userId, status, lastSeen }) {
     state.presence.set(userId, { status, lastSeen });
+    if (state.activeMember?.id === userId) {
+      state.activeMember = { ...state.activeMember, lastSeen };
+      if (elements.memberProfilePresence) {
+        elements.memberProfilePresence.textContent = buildPresence(state.activeMember);
+      }
+    }
     if (state.currentConversationId) {
       updateConversationHeader(state.currentConversationId);
       renderMembers(state.currentConversationId);

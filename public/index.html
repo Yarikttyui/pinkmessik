@@ -230,6 +230,38 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="memberModal">
+    <div class="modal-content member-modal">
+      <button type="button" class="ghost tiny modal-close" data-close>×</button>
+      <div class="member-modal-header">
+        <div class="avatar member-avatar" id="memberProfileAvatar"></div>
+        <div class="member-modal-info">
+          <h3 id="memberProfileName"></h3>
+          <p id="memberProfileStatus"></p>
+          <span class="member-modal-presence" id="memberProfilePresence"></span>
+        </div>
+      </div>
+      <p class="member-modal-bio" id="memberProfileBio"></p>
+      <div class="member-modal-actions">
+        <button type="button" class="primary" id="memberProfileMessageBtn">Написать</button>
+        <button type="button" class="ghost" id="memberProfileCopyBtn">Скопировать ID</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="media-viewer hidden" id="mediaViewer">
+    <div class="media-viewer-backdrop" data-media-close></div>
+    <div class="media-viewer-content">
+      <button type="button" class="ghost tiny media-viewer-close" data-media-close>×</button>
+      <img id="mediaViewerImage" alt="" class="hidden">
+      <video id="mediaViewerVideo" controls class="hidden"></video>
+      <div class="media-viewer-meta">
+        <span id="mediaViewerCaption"></span>
+        <a id="mediaViewerDownload" class="ghost tiny" download target="_blank" rel="noreferrer noopener">Скачать</a>
+      </div>
+    </div>
+  </div>
+
   <div class="toast hidden" id="toast"></div>
 </body>
 </html>

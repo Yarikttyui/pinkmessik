@@ -1647,16 +1647,43 @@
   elements.detailsToggleBtn.addEventListener('click', () => toggleDetails());
   elements.detailsCloseBtn.addEventListener('click', () => toggleDetails(false));
 
-  function toggleDetails(force) {
-    if (window.innerWidth <= 1180) {
-      if (force === false) {
-        elements.detailsPanel.classList.remove('visible');
-        return;
-      }
-      elements.detailsPanel.classList.toggle('visible', force === undefined ? !elements.detailsPanel.classList.contains('visible') : force);
-    } else {
-      elements.detailsPanel.classList.toggle('hidden', force === undefined ? elements.detailsPanel.classList.contains('hidden') : !force);
+  window.addEventListener('resize', () => syncDetailsPanel());
+
+  function desiredPanelState(force) {
+    if (typeof force === 'boolean') return force;
+    const isMobile = window.innerWidth <= 1180;
+    if (isMobile) {
+      return !elements.detailsPanel.classList.contains('visible');
     }
+    return elements.detailsPanel.classList.contains('hidden');
+  }
+
+  function syncDetailsPanel() {
+    const isMobile = window.innerWidth <= 1180;
+    const shouldShow = isMobile
+      ? elements.detailsPanel.classList.contains('visible')
+      : !elements.detailsPanel.classList.contains('hidden');
+    if (isMobile) {
+      elements.detailsPanel.classList.remove('hidden');
+      elements.detailsPanel.classList.toggle('visible', shouldShow);
+    } else {
+      elements.detailsPanel.classList.remove('visible');
+      elements.detailsPanel.classList.toggle('hidden', !shouldShow);
+    }
+  }
+
+  function toggleDetails(force) {
+    const isMobile = window.innerWidth <= 1180;
+    const shouldShow = desiredPanelState(force);
+    if (isMobile) {
+      elements.detailsPanel.classList.toggle('visible', shouldShow);
+    } else {
+      elements.detailsPanel.classList.toggle('hidden', !shouldShow);
+    }
+    if (shouldShow && state.currentConversationId) {
+      fetchMembers(state.currentConversationId).then(() => renderMembers(state.currentConversationId));
+    }
+    syncDetailsPanel();
   }
 
   function updateTyping(conversationId) {
@@ -1883,6 +1910,8 @@
   window.addEventListener('focus', () => {
     scheduleConversationRead();
   });
+
+  syncDetailsPanel();
 
   function markConversationAsRead(conversationId) {
     if (!conversationId) return;

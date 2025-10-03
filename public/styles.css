@@ -232,6 +232,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-height: 0;
 }
 
 .profile-card {
@@ -307,6 +308,7 @@ textarea:focus {
 
 .conversation-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -388,6 +390,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
 .chat-header {
@@ -725,6 +728,8 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .details-header {
@@ -739,6 +744,28 @@ textarea:focus {
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
+  flex: 1;
+  padding-right: 6px;
+}
+
+.history::-webkit-scrollbar,
+.conversation-list::-webkit-scrollbar,
+.member-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.history::-webkit-scrollbar-track,
+.conversation-list::-webkit-scrollbar-track,
+.member-list::-webkit-scrollbar-track {
+  background: rgba(247, 37, 133, 0.06);
+  border-radius: 999px;
+}
+
+.history::-webkit-scrollbar-thumb,
+.conversation-list::-webkit-scrollbar-thumb,
+.member-list::-webkit-scrollbar-thumb {
+  background: rgba(247, 37, 133, 0.35);
+  border-radius: 999px;
 }
 
 .member-item {

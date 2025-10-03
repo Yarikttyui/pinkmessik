@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(100) NOT NULL,
   avatar_color CHAR(7) NOT NULL,
+  avatar_url VARCHAR(255) NULL,
   status_message VARCHAR(160) NOT NULL DEFAULT '',
+  bio VARCHAR(500) NULL,
   last_seen DATETIME NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

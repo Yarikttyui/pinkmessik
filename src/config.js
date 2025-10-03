@@ -12,6 +12,10 @@ const config = {
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || 'YarikTop12',
     database: process.env.DB_NAME || 'pink_messenger'
+  },
+  jitsi: {
+    domain: (process.env.JITSI_DOMAIN || '').trim(),
+    roomPrefix: (process.env.JITSI_ROOM_PREFIX || 'pink').trim()
   }
 };
 

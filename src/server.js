@@ -62,6 +62,16 @@ app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(uploadsDir, { maxAge: '1d' }));
 app.use(express.static(path.join(process.cwd(), 'public')));
 
+app.get('/api/client-config', (req, res) => {
+  const { jitsi = {} } = config;
+  res.json({
+    jitsi: {
+      domain: jitsi.domain || '',
+      roomPrefix: jitsi.roomPrefix || 'pink'
+    }
+  });
+});
+
 const USER_PALETTE = ['#ff8fab', '#ffb3c6', '#ff7aa2', '#ff4d6d', '#f72585', '#f48fb1', '#d946ef', '#fb7185'];
 
 function pickAvatarColor() {

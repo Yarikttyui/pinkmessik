@@ -107,6 +107,7 @@
     reactionMenu: document.getElementById('reactionMenu'),
     callToggleBtn: document.getElementById('callToggleBtn'),
     callOverlay: document.getElementById('callOverlay'),
+  callBody: document.getElementById('callBody'),
     callCloseBtn: document.getElementById('callCloseBtn'),
     callParticipants: document.getElementById('callParticipants'),
     callMedia: document.getElementById('callMedia'),
@@ -162,6 +163,12 @@
     },
     activeCircleVideo: null,
     call: null,
+    jitsi: {
+      domain: '',
+      roomPrefix: 'pink',
+      scriptPromise: null,
+      api: null
+    },
     reactionMenu: {
       messageId: null
     },
@@ -525,6 +532,8 @@
     };
     state.activeCircleVideo = null;
     state.call = null;
+    state.jitsi.api = null;
+    state.jitsi.scriptPromise = null;
     if (state.searchTimer) {
       clearTimeout(state.searchTimer);
       state.searchTimer = null;
@@ -550,6 +559,7 @@
       elements.searchResults.classList.add('hidden');
     }
     updateProfileAvatarPreview();
+    closeCallOverlay();
     closeAllModals();
   }
 
@@ -594,6 +604,28 @@
     applyUser(user);
     saveSession();
     return user;
+  }
+
+  async function loadClientConfig() {
+    try {
+      const response = await fetch('/api/client-config', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data?.jitsi) {
+        const domain = typeof data.jitsi.domain === 'string' ? data.jitsi.domain.trim() : '';
+        const roomPrefix = typeof data.jitsi.roomPrefix === 'string' ? data.jitsi.roomPrefix.trim() : '';
+        state.jitsi.domain = domain;
+        state.jitsi.roomPrefix = roomPrefix || 'pink';
+        if (elements.callToggleBtn) {
+          const hasDomain = Boolean(domain);
+          elements.callToggleBtn.title = hasDomain
+            ? 'Созвон'
+            : 'Добавьте JITSI_DOMAIN в .env, чтобы подключить свой SFU';
+        }
+      }
+    } catch (error) {
+      console.warn('Не удалось загрузить конфигурацию клиента', error);
+    }
   }
 
   function tryParseJson(raw) {
@@ -1228,6 +1260,58 @@
       }
     });
   }
+
+  if (elements.callToggleBtn) {
+    elements.callToggleBtn.addEventListener('click', () => openCallForCurrentConversation());
+  }
+
+  if (elements.callCloseBtn) {
+    elements.callCloseBtn.addEventListener('click', () => closeCallOverlay({ hangup: true }));
+  }
+
+  if (elements.callLeaveBtn) {
+    elements.callLeaveBtn.addEventListener('click', () => closeCallOverlay({ hangup: true }));
+  }
+
+  if (elements.callMicToggle) {
+    elements.callMicToggle.addEventListener('click', () => {
+      if (!state.jitsi?.api) {
+        showToast('Созвон ещё не запущен', 'error');
+        return;
+      }
+      try {
+        state.jitsi.api.executeCommand('toggleAudio');
+      } catch (error) {
+        console.error('Не удалось переключить микрофон', error);
+        showToast('Не удалось переключить микрофон', 'error');
+      }
+    });
+  }
+
+  if (elements.callScreenToggle) {
+    elements.callScreenToggle.addEventListener('click', () => {
+      if (!state.jitsi?.api) {
+        showToast('Созвон ещё не запущен', 'error');
+        return;
+      }
+      try {
+        state.jitsi.api.executeCommand('toggleShareScreen');
+      } catch (error) {
+        console.error('Не удалось переключить демонстрацию экрана', error);
+        showToast('Не удалось переключить демонстрацию экрана', 'error');
+      }
+    });
+  }
+
+  document.querySelectorAll('[data-call-close]').forEach((node) => {
+    node.addEventListener('click', () => closeCallOverlay({ hangup: true }));
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !elements.callOverlay?.classList.contains('hidden')) {
+      closeCallOverlay({ hangup: true });
+    }
+  });
 
   document.querySelectorAll('[data-copy]').forEach((btn) => {
     const targetId = btn.getAttribute('data-copy');
@@ -2471,6 +2555,223 @@
     link.textContent = `${attachmentIcon(attachment)} ${attachment.originalName || 'Файл'}`;
     return link;
   }
+
+  function getJitsiHost() {
+    const domain = (state.jitsi?.domain || '').trim();
+    if (!domain) return '';
+    const withoutScheme = domain.replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
+    const [host] = withoutScheme.split('/');
+    return host || '';
+  }
+
+  function getJitsiBaseUrl() {
+    const domain = (state.jitsi?.domain || '').trim();
+    if (!domain) return '';
+    const schemeMatch = domain.match(/^https?:\/\//i);
+    const scheme = schemeMatch ? schemeMatch[0] : 'https://';
+    const host = getJitsiHost();
+    if (!host) return '';
+    return `${scheme}${host}`;
+  }
+
+  function setCallButtonState(button, isActive) {
+    if (!button) return;
+    button.dataset.active = isActive ? 'true' : 'false';
+  }
+
+  function resetCallButtons() {
+    setCallButtonState(elements.callMicToggle, true);
+    setCallButtonState(elements.callScreenToggle, false);
+  }
+
+  function buildJitsiRoomName(conversation) {
+    const prefix = (state.jitsi?.roomPrefix || 'pink').replace(/[^A-Za-z0-9]/g, '');
+    const base = conversation?.shareCode || conversation?.id || `room${Date.now()}`;
+    const slug = String(base).replace(/[^A-Za-z0-9]/g, '');
+    const safePrefix = prefix || 'PinkRoom';
+    const safeSlug = slug || `call${Date.now()}`;
+    return `${safePrefix}-${safeSlug}`;
+  }
+
+  function updateCallHeader(conversation) {
+    if (!conversation) return;
+    if (elements.callTitle) {
+      const display = conversationDisplay(conversation);
+      elements.callTitle.textContent = `Созвон • ${display.title}`;
+    }
+    if (elements.callSubtitle) {
+      const room = buildJitsiRoomName(conversation);
+      const host = getJitsiHost();
+      elements.callSubtitle.textContent = host ? `Комната ${room} • ${host}` : `Комната ${room}`;
+    }
+  }
+
+  function prepareCallOverlay(conversation) {
+    if (!elements.callOverlay || !elements.callMedia) return;
+    updateCallHeader(conversation);
+    elements.callOverlay.classList.remove('hidden');
+    document.body.classList.add('call-open');
+    if (elements.callBody) {
+      elements.callBody.classList.add('full');
+    }
+    if (elements.callParticipants) {
+      elements.callParticipants.classList.add('hidden');
+    }
+    elements.callMedia.classList.add('jitsi-active');
+    elements.callMedia.innerHTML = '<div class="call-media-loading">Подключаемся к комнате…</div>';
+  }
+
+  function disposeJitsiCall() {
+    if (state.jitsi?.api) {
+      try {
+        state.jitsi.api.dispose?.();
+      } catch (error) {
+        console.warn('Не удалось корректно завершить созвон', error);
+      }
+      state.jitsi.api = null;
+    }
+  }
+
+  function closeCallOverlay({ hangup = false } = {}) {
+    if (hangup && state.jitsi?.api) {
+      try {
+        state.jitsi.api.executeCommand('hangup');
+      } catch (error) {
+        console.warn('Команда завершения созвона не выполнена', error);
+      }
+    }
+    disposeJitsiCall();
+    state.call = null;
+    resetCallButtons();
+    if (elements.callMedia) {
+      elements.callMedia.innerHTML = '';
+      elements.callMedia.classList.remove('jitsi-active');
+    }
+    if (elements.callParticipants) {
+      elements.callParticipants.classList.remove('hidden');
+    }
+    if (elements.callBody) {
+      elements.callBody.classList.remove('full');
+    }
+    if (elements.callOverlay) {
+      elements.callOverlay.classList.add('hidden');
+    }
+    document.body.classList.remove('call-open');
+    if (elements.callSubtitle) {
+      elements.callSubtitle.textContent = 'Ожидание участников...';
+    }
+  }
+
+  async function ensureJitsiScriptLoaded() {
+    if (typeof window !== 'undefined' && window.JitsiMeetExternalAPI) return;
+    const baseUrl = getJitsiBaseUrl();
+    if (!baseUrl) {
+      throw new Error('Адрес Jitsi SFU не настроен');
+    }
+    if (state.jitsi.scriptPromise) {
+      await state.jitsi.scriptPromise;
+      return;
+    }
+    state.jitsi.scriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.id = 'jitsi-external-api';
+      script.async = true;
+      script.src = `${baseUrl}/external_api.js`;
+      script.onload = () => resolve();
+      script.onerror = () => {
+        script.remove();
+        reject(new Error('Не удалось загрузить Jitsi API'));
+      };
+      document.head.append(script);
+    });
+    try {
+      await state.jitsi.scriptPromise;
+    } finally {
+      state.jitsi.scriptPromise = null;
+    }
+  }
+
+  async function startJitsiCall(conversation) {
+    prepareCallOverlay(conversation);
+    try {
+      await ensureJitsiScriptLoaded();
+      if (typeof window === 'undefined' || !window.JitsiMeetExternalAPI) {
+        throw new Error('Jitsi API недоступен');
+      }
+      const host = getJitsiHost();
+      if (!host) {
+        throw new Error('Адрес Jitsi SFU не настроен');
+      }
+      const roomName = buildJitsiRoomName(conversation);
+      if (!elements.callMedia) {
+        throw new Error('Контейнер для созвона не найден');
+      }
+      elements.callMedia.innerHTML = '';
+      const api = new window.JitsiMeetExternalAPI(host, {
+        roomName,
+        parentNode: elements.callMedia,
+        width: '100%',
+        height: '100%',
+        userInfo: {
+          displayName: state.user?.displayName || state.user?.username || 'Участник'
+        },
+        configOverwrite: {
+          prejoinPageEnabled: false,
+          disableDeepLinking: true
+        },
+        interfaceConfigOverwrite: {
+          SHOW_JITSI_WATERMARK: false,
+          SHOW_WATERMARK_FOR_GUESTS: false,
+          HIDE_DEEP_LINKING_LOGO: true
+        }
+      });
+      state.jitsi.api = api;
+      state.call = { conversationId: conversation.id, roomName };
+      resetCallButtons();
+      api.addEventListener('readyToClose', () => closeCallOverlay());
+      api.addEventListener('audioMuteStatusChanged', ({ muted }) => setCallButtonState(elements.callMicToggle, !muted));
+      api.addEventListener('screenSharingStatusChanged', ({ on }) => setCallButtonState(elements.callScreenToggle, !!on));
+    } catch (error) {
+      closeCallOverlay();
+      throw error;
+    }
+  }
+
+  async function openCallForCurrentConversation() {
+    if (state.jitsi?.api) {
+      if (state.call?.conversationId) {
+        const activeConversation = state.conversations.get(state.call.conversationId);
+        if (activeConversation) {
+          updateCallHeader(activeConversation);
+        }
+      }
+      if (elements.callOverlay) {
+        elements.callOverlay.classList.remove('hidden');
+      }
+      document.body.classList.add('call-open');
+      return;
+    }
+    const conversationId = state.currentConversationId;
+    if (!conversationId) {
+      showToast('Сначала выберите беседу', 'error');
+      return;
+    }
+    const conversation = state.conversations.get(conversationId);
+    if (!conversation) {
+      showToast('Не удалось найти беседу', 'error');
+      return;
+    }
+    if (!getJitsiHost()) {
+      showToast('Адрес SFU не настроен. Добавьте JITSI_DOMAIN в .env', 'error');
+      return;
+    }
+    try {
+      await startJitsiCall(conversation);
+    } catch (error) {
+      console.error('Ошибка запуска созвона', error);
+      showToast(error.message || 'Не удалось запустить созвон', 'error');
+    }
+  }
   elements.messageList.addEventListener('click', (event) => {
     const messageElement = event.target.closest('.message');
     if (!messageElement) return;
@@ -2957,6 +3258,7 @@
 
   async function bootstrap() {
     try {
+      await loadClientConfig();
       if (state.token && localStorage.getItem('pink:user')) {
         try {
           applyUser(JSON.parse(localStorage.getItem('pink:user')));

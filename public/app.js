@@ -38,6 +38,10 @@
     messageInput: document.getElementById('messageInput'),
     attachmentInput: document.getElementById('attachmentInput'),
     attachmentBar: document.getElementById('attachmentBar'),
+  replyPreview: document.getElementById('replyPreview'),
+  replyPreviewClose: document.getElementById('replyPreviewClose'),
+  replyPreviewAuthor: document.getElementById('replyPreviewAuthor'),
+  replyPreviewText: document.getElementById('replyPreviewText'),
   voiceRecordBtn: document.getElementById('voiceRecordBtn'),
   circleRecordBtn: document.getElementById('circleRecordBtn'),
   recordingIndicator: document.getElementById('recordingIndicator'),
@@ -86,6 +90,11 @@
     favoritesBtn: document.getElementById('favoritesBtn'),
     favoritesModal: document.getElementById('favoritesModal'),
     favoritesList: document.getElementById('favoritesList'),
+  forwardModal: document.getElementById('forwardModal'),
+  forwardForm: document.getElementById('forwardForm'),
+  forwardConversationSelect: document.getElementById('forwardConversationSelect'),
+  forwardUserInput: document.getElementById('forwardUserInput'),
+  forwardCommentInput: document.getElementById('forwardCommentInput'),
     conversationSettingsBtn: document.getElementById('conversationSettingsBtn'),
     conversationModal: document.getElementById('conversationModal'),
     conversationForm: document.getElementById('conversationForm'),
@@ -106,7 +115,9 @@
     callMicToggle: document.getElementById('callMicToggle'),
     callScreenToggle: document.getElementById('callScreenToggle'),
     callLeaveBtn: document.getElementById('callLeaveBtn'),
-    toast: document.getElementById('toast')
+    toast: document.getElementById('toast'),
+    pinnedBar: document.getElementById('pinnedBar'),
+    messageContextMenu: document.getElementById('messageContextMenu')
   };
 
   const state = {
@@ -150,7 +161,16 @@
       removeAvatar: false
     },
     activeCircleVideo: null,
-    call: null
+    call: null,
+    reactionMenu: {
+      messageId: null
+    },
+    replyTo: null,
+    selectedMessages: new Set(),
+    contextMenu: {
+      messageId: null
+    },
+    pins: new Map()
   };
 
   const API_DEFAULT_HEADERS = { 'Content-Type': 'application/json' };
@@ -159,6 +179,7 @@
     audio: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
     video: ['video/webm', 'video/mp4', 'video/quicktime']
   };
+  const REACTION_EMOJIS = ['❤️', '👍', '🔥', '👏', '🤣', '😍', '🥰', '🥹', '😮', '😢', '🤔', '🤩', '😡', '🎉', '💯'];
 
   state.supportsMediaRecording = (() => {
     if (typeof MediaRecorder === 'undefined' || typeof navigator === 'undefined') return false;
@@ -352,6 +373,29 @@
     return new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
 
+  function buildMessageExcerpt(message) {
+    if (!message) return '';
+    if (typeof message === 'string') {
+      return message.trim().slice(0, 120);
+    }
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (content) {
+      return content.replace(/\s+/g, ' ').slice(0, 120);
+    }
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    if (attachments.length === 1) {
+      const kind = detectAttachmentKind(attachments[0]);
+      if (kind === 'image') return '🖼️ Изображение';
+      if (kind === 'audio') return '🎙️ Голосовое сообщение';
+      if (kind === 'video') return attachments[0].isCircle ? '📹 Кружок' : '🎬 Видео';
+      return '📎 Вложение';
+    }
+    if (attachments.length > 1) {
+      return `📎 ${attachments.length} вложения`;
+    }
+    return '';
+  }
+
   function setAvatar(node, { url, color, text } = {}) {
     if (!node) return;
     const existingImg = node.querySelector('img[data-avatar-img]');
@@ -470,6 +514,10 @@
     state.activeFolderId = 'all';
     state.favorites = [];
     state.favoritesLoaded = false;
+    state.replyTo = null;
+  state.selectedMessages = new Set();
+  state.contextMenu = { messageId: null };
+  state.pins = new Map();
     state.conversationDraft = {
       avatarAttachmentId: null,
       avatarUrl: null,
@@ -1530,6 +1578,23 @@
       deleted.textContent = 'Сообщение удалено';
       bubble.append(deleted);
     } else {
+      if (message.replyTo) {
+        const replySnippet = document.createElement('button');
+        replySnippet.type = 'button';
+        replySnippet.className = 'reply-snippet';
+        replySnippet.dataset.replyId = message.replyTo.id ? String(message.replyTo.id) : '';
+        const author = document.createElement('strong');
+        author.textContent = message.replyTo.user?.displayName || message.replyTo.user?.username || 'Сообщение';
+        const preview = document.createElement('span');
+        preview.textContent = buildMessageExcerpt(message.replyTo) || 'Предпросмотр недоступен';
+        replySnippet.append(author, preview);
+        replySnippet.addEventListener('click', () => {
+          if (message.replyTo?.id) {
+            focusMessage(message.replyTo.id);
+          }
+        });
+        bubble.append(replySnippet);
+      }
       if (message.content) {
         const text = document.createElement('div');
         text.className = 'text';
@@ -1552,7 +1617,12 @@
     const reactBtn = document.createElement('button');
     reactBtn.type = 'button';
     reactBtn.className = 'action-react';
-    reactBtn.textContent = '❤';
+    reactBtn.dataset.messageId = String(message.id);
+    reactBtn.setAttribute('aria-label', 'Реакции на сообщение');
+    reactBtn.title = 'Добавить реакцию';
+    reactBtn.innerHTML = REACTION_EMOJIS.slice(0, 6)
+      .map((emoji) => `<span>${emoji}</span>`)
+      .join('');
     actions.append(reactBtn);
     if (!message.deletedAt && isOwn) {
       const favoriteBtn = document.createElement('button');
@@ -1603,6 +1673,17 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function focusMessage(messageId) {
+    if (!messageId || !elements.messageList) return;
+    const node = elements.messageList.querySelector(`[data-message-id="${messageId}"]`);
+    if (!node) return;
+    node.classList.add('focus');
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setTimeout(() => {
+      node.classList.remove('focus');
+    }, 1200);
   }
 
   function scrollToBottom(force = false) {
@@ -2207,7 +2288,15 @@
       }
     }
 
-    if (event.target.classList.contains('action-edit')) {
+    const reactButton = event.target.closest('.action-react');
+    if (reactButton) {
+      event.preventDefault();
+      openReactionMenu(message.id, reactButton);
+      return;
+    }
+
+    const editButton = event.target.closest('.action-edit');
+    if (editButton) {
       const newContent = prompt('Изменить сообщение', message.content || '');
       if (newContent == null) return;
       apiRequest(`/api/messages/${messageId}`, {
@@ -2217,19 +2306,17 @@
       return;
     }
 
-    if (event.target.classList.contains('action-delete')) {
+    const deleteButton = event.target.closest('.action-delete');
+    if (deleteButton) {
       if (!confirm('Удалить сообщение?')) return;
       apiRequest(`/api/messages/${messageId}`, { method: 'DELETE' }).catch((error) => showToast(error.message || 'Не удалось удалить сообщение', 'error'));
       return;
     }
 
-    if (event.target.classList.contains('action-favorite')) {
+    const favoriteButton = event.target.closest('.action-favorite');
+    if (favoriteButton) {
       toggleFavorite(message);
       return;
-    }
-
-    if (event.target.classList.contains('action-react')) {
-      toggleReaction(message, '💩');
     }
   });
 
@@ -2241,6 +2328,87 @@
       body: JSON.stringify({ emoji, action })
     }).catch((error) => showToast(error.message || 'Не удалось отправить реакцию', 'error'));
     state.socket?.emit('message:reaction', { messageId: message.id, emoji, action });
+  }
+
+  function hasSelfReaction(message, emoji) {
+    return Boolean(message?.reactions?.some((reaction) => reaction.emoji === emoji && reaction.reacted));
+  }
+
+  function openReactionMenu(messageId, anchor) {
+    if (!elements.reactionMenu || !anchor) return;
+    const message = findMessage(messageId);
+    if (!message) return;
+    const menu = elements.reactionMenu;
+    menu.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    REACTION_EMOJIS.forEach((emoji) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'reaction-option';
+      button.dataset.emoji = emoji;
+      button.textContent = emoji;
+      if (hasSelfReaction(message, emoji)) {
+        button.classList.add('active');
+      }
+      fragment.append(button);
+    });
+    menu.append(fragment);
+    const rect = anchor.getBoundingClientRect();
+    const scrollX = window.scrollX || document.documentElement.scrollLeft;
+    const scrollY = window.scrollY || document.documentElement.scrollTop;
+    const left = rect.left + rect.width / 2 + scrollX;
+    const top = rect.top + scrollY - 12;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    state.reactionMenu.messageId = messageId;
+    menu.dataset.messageId = String(messageId);
+    menu.classList.remove('hidden');
+    requestAnimationFrame(() => menu.classList.add('visible'));
+  }
+
+  function closeReactionMenu() {
+    if (!elements.reactionMenu) return;
+    if (state.reactionMenu.messageId === null) return;
+    elements.reactionMenu.classList.remove('visible');
+    state.reactionMenu.messageId = null;
+    elements.reactionMenu.dataset.messageId = '';
+    elements.reactionMenu.style.left = '';
+    elements.reactionMenu.style.top = '';
+    setTimeout(() => {
+      if (state.reactionMenu.messageId === null) {
+        elements.reactionMenu.classList.add('hidden');
+        elements.reactionMenu.innerHTML = '';
+      }
+    }, 150);
+  }
+
+  if (elements.reactionMenu) {
+    elements.reactionMenu.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-emoji]');
+      if (!target) return;
+      const emoji = target.dataset.emoji;
+      const messageId = Number(elements.reactionMenu.dataset.messageId || '0');
+      const message = messageId ? findMessage(messageId) : null;
+      if (message && emoji) {
+        toggleReaction(message, emoji);
+      }
+      closeReactionMenu();
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    if (state.reactionMenu.messageId === null) return;
+    if (elements.reactionMenu?.contains(event.target)) return;
+    if (event.target.closest('.action-react')) return;
+    closeReactionMenu();
+  });
+
+  if (elements.messageScroller) {
+    elements.messageScroller.addEventListener('scroll', () => {
+      if (state.reactionMenu.messageId !== null) {
+        closeReactionMenu();
+      }
+    });
   }
 
   async function toggleFavorite(message) {
@@ -2320,6 +2488,10 @@
 
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented || event.key !== 'Escape') return;
+    if (state.reactionMenu.messageId !== null) {
+      closeReactionMenu();
+      return;
+    }
     if (elements.mediaViewer && !elements.mediaViewer.classList.contains('hidden')) {
       closeMediaViewer();
       return;
@@ -2412,15 +2584,16 @@
       clearTimeout(state.readTimer);
       state.readTimer = null;
     }
+    closeReactionMenu();
+    if (state.recording) {
+      stopRecording({ cancel: true });
+    }
     state.currentConversationId = conversationId;
     const current = state.conversations.get(conversationId);
     if (current && current.unreadCount) {
       state.conversations.set(conversationId, { ...current, unreadCount: 0 });
-    if (state.recording) {
-      stopRecording({ cancel: true });
     }
-      renderConversationList();
-    }
+    renderConversationList();
     elements.chatPlaceholder.classList.add('hidden');
     elements.chatPane.classList.remove('hidden');
 

@@ -122,6 +122,8 @@
             <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Напишите сообщение..."></textarea>
             <button type="submit" class="primary">Отправить</button>
           </div>
+          <input type="file" id="voiceFallbackInput" accept="audio/*" hidden>
+          <input type="file" id="circleFallbackInput" accept="video/*" hidden>
           <div class="recording-indicator hidden" id="recordingIndicator">
             <span class="recording-dot"></span>
             <span id="recordingStatus">00:00</span>

@@ -668,6 +668,12 @@ textarea:focus {
   transition: background 0.2s, transform 0.2s;
 }
 
+.record-btn.fallback {
+  border-style: solid;
+  background: rgba(53, 36, 63, 0.06);
+  color: var(--pink-500);
+}
+
 .record-btn:hover {
   background: rgba(247, 37, 133, 0.15);
   transform: translateY(-1px);

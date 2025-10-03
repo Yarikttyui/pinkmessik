@@ -44,6 +44,8 @@
   recordingStatus: document.getElementById('recordingStatus'),
   recordingType: document.getElementById('recordingType'),
   recordingStopBtn: document.getElementById('recordingStopBtn'),
+  voiceFallbackInput: document.getElementById('voiceFallbackInput'),
+  circleFallbackInput: document.getElementById('circleFallbackInput'),
     profileModal: document.getElementById('profileModal'),
     profileForm: document.getElementById('profileForm'),
   profileAvatarPreview: document.getElementById('profileAvatarPreview'),
@@ -81,6 +83,7 @@
     readTimer: null,
     recording: null,
     recordingTimer: null,
+    supportsMediaRecording: false,
     profileDraft: {
       avatarAttachmentId: null,
       avatarUrl: null,
@@ -94,6 +97,21 @@
     audio: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
     video: ['video/webm', 'video/mp4', 'video/quicktime']
   };
+
+  state.supportsMediaRecording = Boolean(
+    typeof MediaRecorder !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    navigator.mediaDevices?.getUserMedia
+  );
+
+  if (!state.supportsMediaRecording) {
+    if (elements.voiceRecordBtn) {
+      elements.voiceRecordBtn.classList.add('fallback');
+    }
+    if (elements.circleRecordBtn) {
+      elements.circleRecordBtn.classList.add('fallback');
+    }
+  }
 
   function initials(text = '') {
     return text
@@ -1141,8 +1159,20 @@
     }
   });
 
+  if (elements.voiceFallbackInput) {
+    elements.voiceFallbackInput.addEventListener('change', (event) => handleFallbackSelection(event, 'voice'));
+  }
+
+  if (elements.circleFallbackInput) {
+    elements.circleFallbackInput.addEventListener('change', (event) => handleFallbackSelection(event, 'circle'));
+  }
+
   if (elements.voiceRecordBtn) {
     elements.voiceRecordBtn.addEventListener('click', async () => {
+      if (!state.supportsMediaRecording) {
+        triggerFallbackRecording('voice');
+        return;
+      }
       if (state.recording?.type === 'voice') {
         await stopRecording();
       } else {
@@ -1153,6 +1183,10 @@
 
   if (elements.circleRecordBtn) {
     elements.circleRecordBtn.addEventListener('click', async () => {
+      if (!state.supportsMediaRecording) {
+        triggerFallbackRecording('circle');
+        return;
+      }
       if (state.recording?.type === 'circle') {
         await stopRecording();
       } else {
@@ -1192,6 +1226,11 @@
   }
 
   function setRecordingButtonState(activeType) {
+    if (!state.supportsMediaRecording) {
+      if (elements.voiceRecordBtn) elements.voiceRecordBtn.classList.remove('active');
+      if (elements.circleRecordBtn) elements.circleRecordBtn.classList.remove('active');
+      return;
+    }
     if (elements.voiceRecordBtn) {
       elements.voiceRecordBtn.classList.toggle('active', activeType === 'voice');
     }
@@ -1226,6 +1265,89 @@
     }
   }
 
+  function triggerFallbackRecording(type) {
+    const input = type === 'voice' ? elements.voiceFallbackInput : elements.circleFallbackInput;
+    if (input) {
+      input.click();
+    } else {
+      showToast('Запись не поддерживается в этом браузере', 'error');
+    }
+  }
+
+  function extractMediaDuration(file) {
+    return new Promise((resolve) => {
+      if (!file || typeof URL === 'undefined') {
+        resolve(null);
+        return;
+      }
+      const type = file.type || '';
+      if (!type.startsWith('audio') && !type.startsWith('video')) {
+        resolve(null);
+        return;
+      }
+      const element = document.createElement(type.startsWith('video') ? 'video' : 'audio');
+      let settled = false;
+      const cleanup = () => {
+        if (element.src) {
+          URL.revokeObjectURL(element.src);
+        }
+      };
+      element.preload = 'metadata';
+      element.muted = true;
+      element.onloadedmetadata = () => {
+        if (settled) return;
+        settled = true;
+        const duration = Number.isFinite(element.duration) && element.duration > 0 ? Math.round(element.duration * 1000) : null;
+        cleanup();
+        resolve(duration);
+      };
+      element.onerror = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(null);
+      };
+      element.src = URL.createObjectURL(file);
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          resolve(null);
+        }
+      }, 5000);
+    });
+  }
+
+  async function handleFallbackSelection(event, type) {
+    const input = event.target;
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+    const file = files[0];
+    try {
+      const kind = (file.type || '').split('/')[0];
+      if (type === 'voice' && kind !== 'audio') {
+        showToast('Выберите аудиофайл', 'error');
+        return;
+      }
+      if (type === 'circle' && kind !== 'video') {
+        showToast('Выберите видеофайл', 'error');
+        return;
+      }
+      const durationMs = await extractMediaDuration(file);
+      const uploadOptions = { fileType: type, durationMs };
+      if (type === 'circle') uploadOptions.circle = true;
+      const attachment = await apiUpload(file, uploadOptions);
+      state.pendingAttachments.push(attachment);
+      renderAttachmentBar();
+      showToast(type === 'voice' ? 'Голосовое добавлено' : 'Кружок добавлен', 'success');
+    } catch (error) {
+      console.error('Fallback upload failed', error);
+      showToast(error.message || 'Не удалось загрузить файл', 'error');
+    } finally {
+      input.value = '';
+    }
+  }
+
   function getRecorderMimeType(type) {
     if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
     const candidates = type === 'voice'
@@ -1235,8 +1357,8 @@
   }
 
   async function startRecording(type) {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      showToast('Браузер не поддерживает запись', 'error');
+    if (!state.supportsMediaRecording) {
+      triggerFallbackRecording(type);
       return;
     }
     if (state.recording) {
@@ -1651,11 +1773,30 @@
     if (!state.token) return;
     const socket = io({
       auth: { token: state.token },
-      transports: ['websocket', 'polling']
+      transports: ['polling'],
+      upgrade: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 800,
+      reconnectionDelayMax: 4000
+    });
+
+    socket.on('connect', () => {
+      if (state.socketErrorShown) {
+        showToast('Соединение восстановлено', 'success');
+      }
+      state.socketErrorShown = false;
     });
 
     socket.on('connect_error', (err) => {
-      showToast(err.message || 'Не удалось подключиться', 'error');
+      if (!state.socketErrorShown) {
+        showToast(err?.message || 'Не удалось подключиться', 'error');
+        state.socketErrorShown = true;
+      }
+    });
+
+    socket.on('disconnect', () => {
+      state.socketErrorShown = true;
     });
 
     socket.on('conversation:list', (list) => upsertConversations(list));

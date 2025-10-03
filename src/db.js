@@ -129,8 +129,14 @@ async function initDb() {
       stored_name VARCHAR(255) NOT NULL,
       mime_type VARCHAR(120) NOT NULL,
       size INT NOT NULL,
+      kind VARCHAR(20) NOT NULL DEFAULT 'file',
+      file_type VARCHAR(32) NULL,
+      duration_ms INT NULL,
+      waveform JSON NULL,
+      is_circle TINYINT(1) NOT NULL DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_attachments_user_created (user_id, created_at DESC)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -146,6 +152,15 @@ async function ensureColumns() {
   await ensureColumn(db, 'conversations', 'share_code', "ALTER TABLE conversations ADD COLUMN share_code CHAR(12) NOT NULL DEFAULT '' AFTER id");
   await ensureColumn(db, 'users', 'avatar_url', "ALTER TABLE users ADD COLUMN avatar_url VARCHAR(255) NULL AFTER avatar_color");
   await ensureColumn(db, 'users', 'bio', "ALTER TABLE users ADD COLUMN bio VARCHAR(500) NULL AFTER status_message");
+  await ensureColumn(db, 'attachments', 'kind', "ALTER TABLE attachments ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'file' AFTER size");
+  await ensureColumn(db, 'attachments', 'file_type', "ALTER TABLE attachments ADD COLUMN file_type VARCHAR(32) NULL AFTER kind");
+  await ensureColumn(db, 'attachments', 'duration_ms', "ALTER TABLE attachments ADD COLUMN duration_ms INT NULL AFTER file_type");
+  await ensureColumn(db, 'attachments', 'waveform', "ALTER TABLE attachments ADD COLUMN waveform JSON NULL AFTER duration_ms");
+  await ensureColumn(db, 'attachments', 'is_circle', "ALTER TABLE attachments ADD COLUMN is_circle TINYINT(1) NOT NULL DEFAULT 0 AFTER waveform");
+  await ensureIndex(db, 'attachments', 'idx_attachments_user_created', 'CREATE INDEX idx_attachments_user_created ON attachments (user_id, created_at)');
+
+  await db.query("UPDATE attachments SET kind = 'file' WHERE kind IS NULL OR kind = ''");
+  await db.query('UPDATE attachments SET is_circle = 0 WHERE is_circle IS NULL');
 
   await db.query(`
     UPDATE users
@@ -178,6 +193,16 @@ async function ensureUploadsDir() {
   const uploadsDir = path.join(process.cwd(), 'uploads');
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+}
+
+async function ensureIndex(db, table, indexName, createSql) {
+  const [indexRows] = await db.query(
+    `SELECT COUNT(*) AS count FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+    [config.db.database, table, indexName]
+  );
+  if (!indexRows[0].count) {
+    await db.query(createSql);
   }
 }
 

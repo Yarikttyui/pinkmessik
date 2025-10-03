@@ -28,6 +28,12 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+const ALLOWED_MIME_TYPES = {
+  image: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+  audio: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
+  video: ['video/webm', 'video/mp4', 'video/quicktime']
+};
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
@@ -38,10 +44,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-    if (allowed.includes(file.mimetype)) {
+    if (isAllowedMimeType(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error('Недопустимый тип файла'));
@@ -146,17 +151,46 @@ function mapConversation(row) {
 }
 function mapAttachment(row) {
   if (!row) return null;
-  return {
+  return normalizeAttachment({
     id: row.id,
-    url: `/uploads/${row.stored_name}`,
-    originalName: row.file_name,
-    mimeType: row.mime_type,
-    size: row.size
+    stored_name: row.stored_name,
+    file_name: row.file_name,
+    mime_type: row.mime_type,
+    size: row.size,
+    kind: row.kind,
+    is_circle: row.is_circle,
+    duration_ms: row.duration_ms,
+    waveform: row.waveform,
+    file_type: row.file_type
+  });
+}
+
+function normalizeAttachment(payload) {
+  if (!payload) return null;
+  const mimeType = payload.mimeType || payload.mime_type || '';
+  const waveform = payload.waveform ? safeJsonParse(payload.waveform) : null;
+  const durationRaw = payload.durationMs ?? payload.duration_ms;
+  const parsedDuration = Number(durationRaw);
+  const durationMs = Number.isFinite(parsedDuration) && parsedDuration >= 0 ? parsedDuration : null;
+  return {
+    id: payload.id,
+    url: payload.url || (payload.stored_name ? `/uploads/${payload.stored_name}` : null),
+    originalName: payload.originalName || payload.file_name || null,
+    mimeType,
+    size: payload.size ?? payload.file_size ?? null,
+    kind: payload.kind || detectAttachmentKind(mimeType),
+    isCircle: Boolean(payload.isCircle ?? payload.is_circle ?? false),
+    durationMs,
+    waveform,
+    fileType: payload.fileType || payload.file_type || null
   };
 }
 
 function mapMessage(row, currentUserId) {
-  const attachments = safeJsonParse(row.attachments, []);
+  const attachmentsRaw = safeJsonParse(row.attachments, []);
+  const attachments = Array.isArray(attachmentsRaw)
+    ? attachmentsRaw.map((item) => normalizeAttachment(item)).filter(Boolean)
+    : [];
   const reactions = safeJsonParse(row.reactions, []);
   return {
     id: row.id,
@@ -387,6 +421,44 @@ async function markConversationRead(conversationId, userId) {
     'UPDATE conversation_members SET last_read_at = GREATEST(COALESCE(last_read_at, 0), CURRENT_TIMESTAMP) WHERE conversation_id = ? AND user_id = ?',
     [conversationId, userId]
   );
+}
+
+function isAllowedMimeType(mimeType) {
+  const base = (mimeType || '').split(';')[0];
+  return Object.values(ALLOWED_MIME_TYPES).some((group) => group.includes(base));
+}
+
+function detectAttachmentKind(mimeType) {
+  const base = (mimeType || '').split(';')[0];
+  if (ALLOWED_MIME_TYPES.image.includes(base)) return 'image';
+  if (ALLOWED_MIME_TYPES.audio.includes(base)) return 'audio';
+  if (ALLOWED_MIME_TYPES.video.includes(base)) return 'video';
+  return 'file';
+}
+
+function tryStringifyWaveform(raw) {
+  if (!raw) return null;
+  try {
+    if (Array.isArray(raw)) {
+      return JSON.stringify(raw.slice(0, 256));
+    }
+    if (typeof raw === 'string') {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return JSON.stringify(parsed.slice(0, 256));
+      }
+      return raw;
+    }
+    if (typeof raw === 'object') {
+      if (Array.isArray(raw.values)) {
+        return JSON.stringify(raw.values.slice(0, 256));
+      }
+      return JSON.stringify(raw);
+    }
+  } catch (error) {
+    console.warn('Failed to stringify waveform', error);
+  }
+  return null;
 }
 
 function authGuard(req, res, next) {
@@ -644,6 +716,23 @@ app.post(
     }
   }
 );
+
+app.post(
+  '/api/conversations/:id/read',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = Number(req.params.id);
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+    await markConversationRead(conversationId, req.auth.id);
+    await emitConversationUpdate(conversationId, [req.auth.id]);
+    return res.status(204).send();
+  }
+);
 app.post(
   '/api/conversations/direct',
   authGuard,
@@ -841,6 +930,17 @@ app.get(
   }
 );
 
+app.post('/api/conversations/:id/read', authGuard, param('id').isInt(), validationProblem, async (req, res) => {
+  const conversationId = Number(req.params.id);
+  const membership = await ensureMembership(conversationId, req.auth.id);
+  if (!membership) {
+    return res.status(403).json({ message: 'Доступ запрещён' });
+  }
+  await markConversationRead(conversationId, req.auth.id);
+  await emitConversationUpdate(conversationId, [req.auth.id]);
+  return res.json({ ok: true });
+});
+
 app.post(
   '/api/conversations/:id/messages',
   authGuard,
@@ -968,16 +1068,27 @@ app.post('/api/uploads', authGuard, upload.single('file'), async (req, res) => {
   }
   try {
     const id = uuid();
+    const kind = detectAttachmentKind(req.file.mimetype);
+    const isCircle = String(req.body?.circle || '').toLowerCase() === 'true';
+  const rawDuration = req.body?.duration !== undefined ? Number(req.body.duration) : null;
+  const duration = Number.isFinite(rawDuration) && rawDuration >= 0 ? Math.round(rawDuration) : null;
+    const waveform = req.body?.waveform ? tryStringifyWaveform(req.body.waveform) : null;
+    const fileType = req.body?.type || null;
     await pool.query(
-      'INSERT INTO attachments (id, user_id, file_name, stored_name, mime_type, size) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, req.auth.id, req.file.originalname, req.file.filename, req.file.mimetype, req.file.size]
+      'INSERT INTO attachments (id, user_id, file_name, stored_name, mime_type, size, kind, is_circle, duration_ms, waveform, file_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, req.auth.id, req.file.originalname, req.file.filename, req.file.mimetype, req.file.size, kind, isCircle ? 1 : 0, duration, waveform, fileType]
     );
     return res.status(201).json({ attachment: mapAttachment({
       id,
       file_name: req.file.originalname,
       stored_name: req.file.filename,
       mime_type: req.file.mimetype,
-      size: req.file.size
+      size: req.file.size,
+      kind,
+      is_circle: isCircle ? 1 : 0,
+      duration_ms: duration,
+      waveform,
+      file_type: fileType
     }) });
   } catch (error) {
     console.error('Upload error', error);

@@ -111,8 +111,8 @@
         <form class="composer" id="messageForm" autocomplete="off">
           <div class="attachment-bar hidden" id="attachmentBar"></div>
           <div class="composer-row">
-            <label class="attachment-btn" title="Прикрепить изображение">
-              <input type="file" id="attachmentInput" accept="image/*" hidden>
+            <label class="attachment-btn" title="Прикрепить файл">
+              <input type="file" id="attachmentInput" accept="image/*,audio/*,video/*" hidden>
               📎
             </label>
             <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Напишите сообщение..."></textarea>
@@ -143,7 +143,7 @@
               Загрузить фото
             </label>
             <button type="button" class="ghost tiny" id="profileAvatarRemoveBtn">Удалить фото</button>
-            <p class="upload-hint">PNG, JPG или WEBP до 5 МБ</p>
+            <p class="upload-hint">PNG, JPG или WEBP до 10 МБ</p>
           </div>
         </div>
         <label>Имя

@@ -71,6 +71,7 @@
     searchResults: [],
     searchQuery: '',
     searchTimer: null,
+    readTimer: null,
     profileDraft: {
       avatarAttachmentId: null,
       avatarUrl: null,
@@ -79,6 +80,11 @@
   };
 
   const API_DEFAULT_HEADERS = { 'Content-Type': 'application/json' };
+  const ATTACHMENT_KIND_BY_MIME = {
+    image: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+    audio: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
+    video: ['video/webm', 'video/mp4', 'video/quicktime']
+  };
 
   function initials(text = '') {
     return text
@@ -174,6 +180,10 @@
     if (state.searchTimer) {
       clearTimeout(state.searchTimer);
       state.searchTimer = null;
+    }
+    if (state.readTimer) {
+      clearTimeout(state.readTimer);
+      state.readTimer = null;
     }
     if (query.length < 2) {
       renderSearchResults();
@@ -384,9 +394,34 @@
     }
     return data;
   }
-  async function apiUpload(file) {
+
+  function tryParseJson(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      return null;
+    }
+  }
+  async function apiUpload(file, options = {}) {
     const formData = new FormData();
     formData.append('file', file);
+    if (options.circle) {
+      formData.append('circle', 'true');
+    }
+    if (typeof options.durationMs === 'number' && Number.isFinite(options.durationMs)) {
+      formData.append('duration', String(Math.max(0, Math.round(options.durationMs))));
+    }
+    if (options.waveform) {
+      const waveform = Array.isArray(options.waveform) ? options.waveform : tryParseJson(options.waveform);
+      if (Array.isArray(waveform)) {
+        formData.append('waveform', JSON.stringify(waveform.slice(0, 256)));
+      }
+    }
+    if (options.fileType) {
+      formData.append('type', options.fileType);
+    }
     const response = await fetch('/api/uploads', {
       method: 'POST',
       body: formData,
@@ -561,7 +596,7 @@
       const [file] = event.target.files || [];
       if (!file) return;
       try {
-        const attachment = await apiUpload(file);
+  const attachment = await apiUpload(file, { fileType: 'avatar' });
         state.profileDraft.avatarAttachmentId = attachment.id;
         state.profileDraft.avatarUrl = attachment.url;
         state.profileDraft.removeAvatar = false;
@@ -972,10 +1007,8 @@
         const bar = document.createElement('div');
         bar.className = 'attachments';
         message.attachments.forEach((attachment) => {
-          const img = document.createElement('img');
-          img.src = attachment.url;
-          img.alt = attachment.originalName || 'Вложение';
-          bar.append(img);
+          const node = renderAttachmentNode(attachment);
+          if (node) bar.append(node);
         });
         bubble.append(bar);
       }
@@ -1087,7 +1120,7 @@
     if (!files.length) return;
     try {
       for (const file of files.slice(0, 5)) {
-        const attachment = await apiUpload(file);
+        const attachment = await apiUpload(file, { fileType: 'message' });
         state.pendingAttachments.push(attachment);
       }
       renderAttachmentBar();
@@ -1109,7 +1142,7 @@
     state.pendingAttachments.forEach((file, index) => {
       const chip = document.createElement('div');
       chip.className = 'attachment-chip';
-      chip.innerHTML = `<span>📎 ${file.originalName || 'Файл'}</span>`;
+      chip.innerHTML = `<span>${attachmentIcon(file)} ${file.originalName || 'Файл'}</span>`;
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.textContent = '×';
@@ -1120,6 +1153,89 @@
       chip.append(remove);
       elements.attachmentBar.append(chip);
     });
+  }
+
+  function detectAttachmentKind(attachment) {
+    if (attachment?.kind) return attachment.kind;
+    const mime = (attachment?.mimeType || '').split(';')[0];
+    if (!mime) return 'file';
+    if (ATTACHMENT_KIND_BY_MIME.image.includes(mime)) return 'image';
+    if (ATTACHMENT_KIND_BY_MIME.audio.includes(mime)) return 'audio';
+    if (ATTACHMENT_KIND_BY_MIME.video.includes(mime)) return 'video';
+    return 'file';
+  }
+
+  function attachmentIcon(attachment) {
+    const kind = detectAttachmentKind(attachment);
+    if (kind === 'image') return '🖼️';
+    if (kind === 'audio') return '🎙️';
+    if (kind === 'video') return '🎬';
+    return '📎';
+  }
+
+  function renderAttachmentNode(attachment) {
+    if (!attachment) return null;
+    if (!attachment.url) {
+      const placeholder = document.createElement('span');
+      placeholder.className = 'attachment-file';
+      placeholder.textContent = `${attachmentIcon(attachment)} ${attachment.originalName || 'Вложение'}`;
+      return placeholder;
+    }
+    const kind = detectAttachmentKind(attachment);
+    if (attachment.isCircle && kind === 'image') {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'attachment-circle';
+      const img = document.createElement('img');
+      img.src = attachment.url;
+      img.alt = attachment.originalName || 'История';
+      img.loading = 'lazy';
+      wrapper.append(img);
+      return wrapper;
+    }
+    if (attachment.isCircle || kind === 'video') {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'attachment-video';
+      if (attachment.isCircle) wrapper.classList.add('attachment-circle');
+      const video = document.createElement('video');
+      video.src = attachment.url;
+      video.controls = true;
+      video.preload = 'metadata';
+      if (attachment.isCircle) {
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('muted', 'true');
+        video.loop = true;
+      }
+      wrapper.append(video);
+      return wrapper;
+    }
+    if (kind === 'audio') {
+      const audio = document.createElement('audio');
+      audio.src = attachment.url;
+      audio.controls = true;
+      audio.preload = 'metadata';
+      audio.className = 'attachment-audio';
+      if (attachment.durationMs) {
+        audio.dataset.duration = String(Math.round(attachment.durationMs / 1000));
+      }
+      return audio;
+    }
+    if (kind === 'image') {
+      const img = document.createElement('img');
+      img.src = attachment.url;
+      img.alt = attachment.originalName || 'Изображение';
+      img.loading = 'lazy';
+      if (attachment.isCircle) {
+        img.classList.add('attachment-circle');
+      }
+      return img;
+    }
+    const link = document.createElement('a');
+    link.href = attachment.url;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    link.className = 'attachment-file';
+    link.textContent = `${attachmentIcon(attachment)} ${attachment.originalName || 'Файл'}`;
+    return link;
   }
   elements.messageList.addEventListener('click', (event) => {
     const messageElement = event.target.closest('.message');
@@ -1145,7 +1261,7 @@
     }
 
     if (event.target.classList.contains('action-react')) {
-      toggleReaction(message, '❤️');
+      toggleReaction(message, '💩');
     }
   });
 
@@ -1251,6 +1367,10 @@
 
   function openConversation(conversationId) {
     if (!state.conversations.has(conversationId)) return;
+    if (state.readTimer) {
+      clearTimeout(state.readTimer);
+      state.readTimer = null;
+    }
     state.currentConversationId = conversationId;
     const current = state.conversations.get(conversationId);
     if (current && current.unreadCount) {
@@ -1266,14 +1386,16 @@
 
     fetchMembers(conversationId).then(renderMembers);
     updateConversationHeader(conversationId);
-    loadMessages(conversationId).then(() => {
-      renderMessages(conversationId);
-      scrollToBottom(true);
-    });
+    loadMessages(conversationId)
+      .then(() => {
+        renderMessages(conversationId);
+        scrollToBottom(true);
+        scheduleConversationRead();
+      })
+      .catch(() => {
+        scheduleConversationRead();
+      });
 
-    if (state.socket) {
-      state.socket.emit('conversation:read', { conversationId });
-    }
   }
 
   function applyPresenceUpdate({ userId, status, lastSeen }) {
@@ -1299,6 +1421,9 @@
     if (state.currentConversationId === message.conversationId) {
       renderMessages(message.conversationId);
       scrollToBottom(message.user?.id === state.user?.id);
+      if (message.user?.id !== state.user?.id) {
+        scheduleConversationRead();
+      }
     }
   }
 
@@ -1407,10 +1532,29 @@
   }
 
   window.addEventListener('focus', () => {
-    if (state.currentConversationId && state.socket) {
-      state.socket.emit('conversation:read', { conversationId: state.currentConversationId });
-    }
+    scheduleConversationRead();
   });
+
+  function markConversationAsRead(conversationId) {
+    if (!conversationId) return;
+    if (state.socket) {
+      state.socket.emit('conversation:read', { conversationId });
+    }
+    apiRequest(`/api/conversations/${conversationId}/read`, {
+      method: 'POST'
+    }).catch(() => {});
+  }
+
+  function scheduleConversationRead() {
+    if (!state.currentConversationId) return;
+    if (state.readTimer) {
+      clearTimeout(state.readTimer);
+    }
+    state.readTimer = setTimeout(() => {
+      state.readTimer = null;
+      markConversationAsRead(state.currentConversationId);
+    }, 400);
+  }
 
   bootstrap();
 })();

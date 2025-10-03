@@ -75,8 +75,14 @@ CREATE TABLE IF NOT EXISTS attachments (
   stored_name VARCHAR(255) NOT NULL,
   mime_type VARCHAR(120) NOT NULL,
   size INT NOT NULL,
+  kind VARCHAR(16) NOT NULL DEFAULT 'file',
+  file_type VARCHAR(32) NULL,
+  duration_ms INT NULL,
+  waveform JSON NULL,
+  is_circle TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_attachments_user_created (user_id, created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO users (id, public_id, username, password_hash, display_name, avatar_color, status_message)

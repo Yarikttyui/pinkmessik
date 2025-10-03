@@ -76,6 +76,16 @@
         <input type="text" id="conversationFilter" placeholder="Поиск беседы или пользователя">
       </div>
       <div class="search-results hidden" id="searchResults"></div>
+      <div class="folder-panel" id="folderPanel">
+        <div class="folder-panel-header">
+          <span>Папки</span>
+          <button class="ghost tiny" id="folderCreateBtn">+ Новая</button>
+        </div>
+        <div class="folder-chips" id="folderChips">
+          <button type="button" class="chip active" data-folder="all" id="folderAllBtn">Все беседы</button>
+          <div class="folder-chips-list" id="folderList"></div>
+        </div>
+      </div>
       <div class="conversation-list" id="conversationList"></div>
     </aside>
 
@@ -97,9 +107,12 @@
           </div>
           <div class="chat-actions">
             <button class="ghost" id="addMemberBtn">Пригласить</button>
+            <button class="ghost" id="conversationSettingsBtn">Настройки</button>
             <button class="ghost" id="detailsToggleBtn">Участники</button>
           </div>
         </header>
+
+        <div class="pinned-bar hidden" id="pinnedBar"></div>
 
         <div class="typing-line hidden" id="typingIndicator"></div>
 
@@ -109,6 +122,16 @@
         </div>
 
         <form class="composer" id="messageForm" autocomplete="off">
+          <div class="reply-preview hidden" id="replyPreview">
+            <div class="reply-preview-top">
+              <span class="reply-preview-label">Ответ на сообщение</span>
+              <button type="button" class="ghost tiny" id="replyPreviewClose">×</button>
+            </div>
+            <div class="reply-preview-body">
+              <strong id="replyPreviewAuthor"></strong>
+              <p id="replyPreviewText"></p>
+            </div>
+          </div>
           <div class="attachment-bar hidden" id="attachmentBar"></div>
           <div class="composer-row">
             <div class="composer-actions">
@@ -139,7 +162,12 @@
         <h3>Участники</h3>
         <button class="ghost" id="detailsCloseBtn">×</button>
       </div>
-      <ul class="member-list" id="memberList"></ul>
+      <div class="details-body">
+        <div class="conversation-summary" id="detailsSummary"></div>
+        <div class="details-folders hidden" id="detailsFolders"></div>
+        <h4 class="details-section-title">Участники</h4>
+        <ul class="member-list" id="memberList"></ul>
+      </div>
     </aside>
   </div>
 
@@ -244,7 +272,14 @@
       <p class="member-modal-bio" id="memberProfileBio"></p>
       <div class="member-modal-actions">
         <button type="button" class="primary" id="memberProfileMessageBtn">Написать</button>
+        <button type="button" class="ghost" id="memberProfileInviteToggle">Пригласить</button>
         <button type="button" class="ghost" id="memberProfileCopyBtn">Скопировать ID</button>
+      </div>
+      <div class="member-modal-invite hidden" id="memberProfileInviteSection">
+        <label>Беседа
+          <select id="memberProfileInviteSelect"></select>
+        </label>
+        <button type="button" class="primary" id="memberProfileInviteBtn">Отправить</button>
       </div>
     </div>
   </div>
@@ -259,6 +294,73 @@
         <span id="mediaViewerCaption"></span>
         <a id="mediaViewerDownload" class="ghost tiny" download target="_blank" rel="noreferrer noopener">Скачать</a>
       </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="conversationModal">
+    <div class="modal-content conversation-modal">
+      <h2>Настройки беседы</h2>
+      <form id="conversationForm">
+        <div class="conversation-avatar-grid">
+          <div class="avatar conversation-avatar" id="conversationAvatarPreview"></div>
+          <div class="avatar-upload">
+            <label class="ghost file-upload">
+              <input type="file" id="conversationAvatarInput" accept="image/*" hidden>
+              Загрузить обложку
+            </label>
+            <button type="button" class="ghost tiny" id="conversationAvatarRemoveBtn">Удалить обложку</button>
+          </div>
+        </div>
+        <label>Название
+          <input type="text" id="conversationTitleInput" minlength="3" maxlength="100" required>
+        </label>
+        <label>Описание
+          <textarea id="conversationDescriptionInput" rows="3" maxlength="500" placeholder="Опишите беседу"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Сохранить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="forwardModal">
+    <div class="modal-content">
+      <h2>Переслать сообщение</h2>
+      <form id="forwardForm">
+        <label>Беседа
+          <select id="forwardConversationSelect" required></select>
+        </label>
+        <label>Или логин/ID пользователя
+          <input type="text" id="forwardUserInput" placeholder="Например: pinkstar">
+        </label>
+        <label>Комментарий
+          <textarea id="forwardCommentInput" rows="2" maxlength="4000" placeholder="Необязательный текст"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Переслать</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="folderModal">
+    <div class="modal-content">
+      <h2 id="folderModalTitle">Новая папка</h2>
+      <form id="folderForm">
+        <label>Название папки
+          <input type="text" id="folderTitleInput" minlength="2" maxlength="60" required>
+        </label>
+        <label>Цвет
+          <input type="color" id="folderColorInput" value="#ffacd8">
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Сохранить</button>
+        </div>
+      </form>
     </div>
   </div>
 

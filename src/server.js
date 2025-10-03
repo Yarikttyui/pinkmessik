@@ -34,6 +34,8 @@ const ALLOWED_MIME_TYPES = {
   video: ['video/webm', 'video/mp4', 'video/quicktime']
 };
 
+const MAX_PINNED_MESSAGES = 5;
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
@@ -94,6 +96,57 @@ async function generateConversationCode() {
   }
 }
 
+async function ensureDirectConversationBetween(currentUserId, targetUser) {
+  const [existing] = await pool.query(
+    `SELECT c.id
+     FROM conversations c
+     JOIN conversation_members cm1 ON cm1.conversation_id = c.id AND cm1.user_id = ?
+     JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id = ?
+     WHERE c.type = 'direct'
+     LIMIT 1`,
+    [currentUserId, targetUser.id]
+  );
+
+  let conversationId;
+  let created = false;
+
+  if (existing.length) {
+    conversationId = existing[0].id;
+  } else {
+    const shareCode = await generateConversationCode();
+    const [result] = await pool.query(
+      'INSERT INTO conversations (share_code, type, title, description, creator_id, is_private, avatar_attachment_id, avatar_url) VALUES (?, \'direct\', ?, ?, ?, 1, NULL, NULL)',
+      [
+        shareCode,
+        targetUser.display_name || targetUser.username,
+        `Личный чат с ${targetUser.display_name || targetUser.username}`,
+        currentUserId
+      ]
+    );
+    conversationId = result.insertId;
+    await pool.query(
+      'INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?), (?, ?, ?)',
+      [conversationId, currentUserId, 'owner', conversationId, targetUser.id, 'member']
+    );
+    created = true;
+  }
+
+  const conversation = await fetchConversationById(conversationId);
+  const membersList = await fetchConversationMembers(conversationId);
+  const payload = { ...mapConversation(conversation), members: membersList };
+
+  joinUserToConversationSockets(currentUserId, conversationId);
+  joinUserToConversationSockets(targetUser.id, conversationId);
+
+  if (created) {
+    await emitConversationUpdate(conversationId, [currentUserId, targetUser.id]);
+    emitToUser(currentUserId, 'conversation:created', { conversation: payload });
+    emitToUser(targetUser.id, 'conversation:created', { conversation: payload });
+  }
+
+  return { conversationId, created, payload };
+}
+
 async function findUserByUsername(username) {
   const [rows] = await pool.query(
     'SELECT id, public_id, username, password_hash, display_name, avatar_color, status_message, avatar_url, bio, last_seen FROM users WHERE username = ? LIMIT 1',
@@ -135,12 +188,16 @@ function mapUser(row) {
 
 function mapConversation(row) {
   const lastMessage = safeJsonParse(row.last_message);
+  const avatarStoredName = row.avatar_stored_name || row.avatarStoredName;
+  const avatarUrl = row.avatar_url || (avatarStoredName ? `/uploads/${avatarStoredName}` : null);
   return {
     id: row.id,
     shareCode: row.share_code,
     type: row.type,
     title: row.title,
     description: row.description,
+    avatarAttachmentId: row.avatar_attachment_id || null,
+    avatarUrl,
     isPrivate: Boolean(row.is_private),
     creatorId: row.creator_id,
     createdAt: row.created_at,
@@ -192,6 +249,8 @@ function mapMessage(row, currentUserId) {
     ? attachmentsRaw.map((item) => normalizeAttachment(item)).filter(Boolean)
     : [];
   const reactions = safeJsonParse(row.reactions, []);
+  const replySnapshot = safeJsonParse(row.reply_snapshot);
+  const forwardMetadata = safeJsonParse(row.forward_metadata);
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -206,6 +265,22 @@ function mapMessage(row, currentUserId) {
     content: row.deleted_at ? null : row.content,
     attachments,
     parentId: row.parent_id,
+    replyTo: replySnapshot
+      ? {
+          id: replySnapshot.id,
+          content: replySnapshot.content || null,
+          attachments: Array.isArray(replySnapshot.attachments) ? replySnapshot.attachments : [],
+          user: replySnapshot.user || null
+        }
+      : null,
+    forwardedFrom: forwardMetadata
+      ? {
+          messageId: row.forwarded_from_message_id || forwardMetadata.messageId || null,
+          conversationId: forwardMetadata.conversationId || null,
+          user: forwardMetadata.user || null,
+          createdAt: forwardMetadata.createdAt || null
+        }
+      : null,
     isEdited: Boolean(row.is_edited),
     createdAt: row.created_at,
     editedAt: row.edited_at,
@@ -214,7 +289,17 @@ function mapMessage(row, currentUserId) {
       emoji: reaction.emoji,
       count: reaction.count,
       reacted: reaction.userIds.includes(currentUserId)
-    }))
+    })),
+    pinnedAt: row.pinned_at || null,
+    pinnedBy:
+      row.pinned_by
+        ? {
+            id: row.pinned_by,
+            displayName: row.pinned_by_display_name || null,
+            username: row.pinned_by_username || null,
+            publicId: row.pinned_by_public_id || null
+          }
+        : null
   };
 }
 
@@ -261,11 +346,13 @@ async function fetchConversationMembers(conversationId) {
 
 async function fetchConversationList(userId) {
   const [rows] = await pool.query(
-    `SELECT c.*, json_object('id', m.id, 'content', m.content, 'createdAt', m.created_at,
+    `SELECT c.*, ca.stored_name AS avatar_stored_name, ca.file_name AS avatar_file_name, ca.mime_type AS avatar_mime_type,
+            json_object('id', m.id, 'content', m.content, 'createdAt', m.created_at,
       'user', json_object('id', u.id, 'publicId', u.public_id, 'displayName', u.display_name, 'username', u.username, 'avatarUrl', u.avatar_url, 'avatarColor', u.avatar_color)) AS last_message,
             IFNULL(uc.unread_count, 0) AS unread_count
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id = c.id
+     LEFT JOIN attachments ca ON ca.id = c.avatar_attachment_id
      LEFT JOIN (
        SELECT m1.conversation_id, m1.id, m1.content, m1.created_at, m1.user_id
        FROM messages m1
@@ -282,7 +369,7 @@ async function fetchConversationList(userId) {
        FROM messages m
        JOIN conversation_members cm ON cm.conversation_id = m.conversation_id AND cm.user_id = ?
        GROUP BY m.conversation_id
-     ) uc ON uc.conversation_id = c.id
+  ) uc ON uc.conversation_id = c.id
      WHERE cm.user_id = ?
      ORDER BY c.updated_at DESC, c.id DESC`,
     [userId, userId]
@@ -292,7 +379,14 @@ async function fetchConversationList(userId) {
 }
 
 async function fetchConversationById(conversationId) {
-  const [rows] = await pool.query('SELECT * FROM conversations WHERE id = ? LIMIT 1', [conversationId]);
+  const [rows] = await pool.query(
+    `SELECT c.*, ca.stored_name AS avatar_stored_name, ca.file_name AS avatar_file_name, ca.mime_type AS avatar_mime_type
+     FROM conversations c
+     LEFT JOIN attachments ca ON ca.id = c.avatar_attachment_id
+     WHERE c.id = ?
+     LIMIT 1`,
+    [conversationId]
+  );
   return rows[0] || null;
 }
 
@@ -358,6 +452,75 @@ async function fetchMessages(conversationId, currentUserId, options = {}) {
     params
   );
   return rows.reverse().map((row) => mapMessage(row, currentUserId));
+}
+
+async function fetchPinnedMessages(conversationId, currentUserId) {
+  const [rows] = await pool.query(
+    `SELECT m.*, u.public_id, u.username, u.display_name, u.avatar_color, u.avatar_url,
+            (
+              SELECT JSON_ARRAYAGG(JSON_OBJECT('emoji', emoji, 'userIds', user_ids, 'count', cnt))
+              FROM (
+                SELECT emoji, COUNT(*) AS cnt, JSON_ARRAYAGG(user_id) AS user_ids
+                FROM message_reactions
+                WHERE message_id = m.id
+                GROUP BY emoji
+              ) r
+            ) AS reactions,
+            cp.pinned_at, cp.pinned_by,
+            pu.display_name AS pinned_by_display_name,
+            pu.username AS pinned_by_username,
+            pu.public_id AS pinned_by_public_id
+     FROM conversation_pins cp
+     JOIN messages m ON m.id = cp.message_id
+     JOIN users u ON u.id = m.user_id
+     LEFT JOIN users pu ON pu.id = cp.pinned_by
+     WHERE cp.conversation_id = ?
+     ORDER BY cp.pinned_at DESC
+     LIMIT 20`,
+    [conversationId]
+  );
+  return rows.map((row) => mapMessage(row, currentUserId));
+}
+
+async function broadcastPinnedMessages(conversationId) {
+  const members = await fetchConversationMembers(conversationId);
+  await Promise.all(
+    members.map(async (member) => {
+      const pins = await fetchPinnedMessages(conversationId, member.id);
+      emitToUser(member.id, 'conversation:pins', { conversationId, pins });
+    })
+  );
+}
+
+async function fetchFolders(userId) {
+  const [folders] = await pool.query(
+    'SELECT id, title, color FROM conversation_folders WHERE user_id = ? ORDER BY title',
+    [userId]
+  );
+  if (!folders.length) return [];
+  const folderIds = folders.map((folder) => folder.id);
+  const [items] = await pool.query(
+    'SELECT folder_id, conversation_id FROM conversation_folder_items WHERE folder_id IN (?) ORDER BY position, conversation_id',
+    [folderIds]
+  );
+  const grouped = new Map();
+  items.forEach((item) => {
+    if (!grouped.has(item.folder_id)) {
+      grouped.set(item.folder_id, []);
+    }
+    grouped.get(item.folder_id).push(item.conversation_id);
+  });
+  return folders.map((folder) => ({
+    id: folder.id,
+    title: folder.title,
+    color: folder.color,
+    conversations: grouped.get(folder.id) || []
+  }));
+}
+
+async function emitFoldersUpdate(userId) {
+  const folders = await fetchFolders(userId);
+  emitToUser(userId, 'folders:update', { folders });
 }
 
 async function updateConversationTimestamp(conversationId) {
@@ -434,6 +597,10 @@ function detectAttachmentKind(mimeType) {
   if (ALLOWED_MIME_TYPES.audio.includes(base)) return 'audio';
   if (ALLOWED_MIME_TYPES.video.includes(base)) return 'video';
   return 'file';
+}
+
+function isValidHexColor(value) {
+  return typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value.trim());
 }
 
 function tryStringifyWaveform(raw) {
@@ -756,47 +923,7 @@ app.post(
         return res.status(400).json({ message: 'Нельзя начать диалог с самим собой' });
       }
 
-      const [existing] = await pool.query(
-        `SELECT c.id
-         FROM conversations c
-         JOIN conversation_members cm1 ON cm1.conversation_id = c.id AND cm1.user_id = ?
-         JOIN conversation_members cm2 ON cm2.conversation_id = c.id AND cm2.user_id = ?
-         WHERE c.type = 'direct'
-         LIMIT 1`,
-        [req.auth.id, user.id]
-      );
-
-      let conversationId;
-      if (existing.length) {
-        conversationId = existing[0].id;
-      } else {
-        const shareCode = await generateConversationCode();
-        const [result] = await pool.query(
-          'INSERT INTO conversations (share_code, type, title, description, creator_id, is_private) VALUES (?, \'direct\', ?, ?, ?, 1)',
-          [
-            shareCode,
-            user.display_name || user.username,
-            `Личный чат с ${user.display_name || user.username}`,
-            req.auth.id
-          ]
-        );
-        conversationId = result.insertId;
-        await pool.query(
-          'INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?), (?, ?, ?)',
-          [conversationId, req.auth.id, 'owner', conversationId, user.id, 'member']
-        );
-      }
-
-      const conversation = await fetchConversationById(conversationId);
-      const membersList = await fetchConversationMembers(conversationId);
-      const payload = { ...mapConversation(conversation), members: membersList };
-
-  joinUserToConversationSockets(req.auth.id, conversationId);
-  joinUserToConversationSockets(user.id, conversationId);
-      await emitConversationUpdate(conversationId, [req.auth.id, user.id]);
-      emitToUser(req.auth.id, 'conversation:created', { conversation: payload });
-      emitToUser(user.id, 'conversation:created', { conversation: payload });
-
+      const { payload } = await ensureDirectConversationBetween(req.auth.id, user);
       return res.json({ conversation: payload });
     } catch (error) {
       console.error('Direct conversation error', error);
@@ -884,6 +1011,88 @@ app.post(
   }
 );
 
+app.put(
+  '/api/conversations/:id',
+  authGuard,
+  param('id').isInt(),
+  body('title').optional().isLength({ min: 3, max: 100 }),
+  body('description').optional().isLength({ max: 500 }),
+  body('avatarAttachmentId').optional().isLength({ min: 10, max: 64 }),
+  body('removeAvatar').optional().isBoolean(),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = Number(req.params.id);
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      return res.status(403).json({ message: 'Недостаточно прав для изменения беседы' });
+    }
+
+    const fields = [];
+    const params = [];
+
+    if (typeof req.body.title === 'string') {
+      const title = req.body.title.trim();
+      if (title.length < 3) {
+        return res.status(400).json({ message: 'Название должно быть не короче 3 символов' });
+      }
+      fields.push('title = ?');
+      params.push(title);
+    }
+
+    if (typeof req.body.description === 'string') {
+      const description = req.body.description.trim();
+      fields.push('description = ?');
+      params.push(description || null);
+    }
+
+    let avatarAttachmentId = undefined;
+    let avatarUrl = undefined;
+    const removeAvatar = typeof req.body.removeAvatar === 'boolean' ? req.body.removeAvatar : false;
+
+    if (typeof req.body.avatarAttachmentId === 'string' && req.body.avatarAttachmentId.trim()) {
+      const attachmentId = req.body.avatarAttachmentId.trim();
+      const [attachmentRows] = await pool.query(
+        'SELECT id, stored_name FROM attachments WHERE id = ? AND user_id = ? LIMIT 1',
+        [attachmentId, req.auth.id]
+      );
+      if (!attachmentRows.length) {
+        return res.status(400).json({ message: 'Файл для аватара не найден или не принадлежит вам' });
+      }
+      avatarAttachmentId = attachmentRows[0].id;
+      avatarUrl = `/uploads/${attachmentRows[0].stored_name}`;
+    } else if (removeAvatar) {
+      avatarAttachmentId = null;
+      avatarUrl = null;
+    }
+
+    if (avatarAttachmentId !== undefined) {
+      fields.push('avatar_attachment_id = ?');
+      params.push(avatarAttachmentId);
+      fields.push('avatar_url = ?');
+      params.push(avatarUrl);
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ message: 'Нет изменений для сохранения' });
+    }
+
+    params.push(conversationId);
+    await pool.query(`UPDATE conversations SET ${fields.join(', ')} WHERE id = ?`, params);
+
+    const conversation = await fetchConversationById(conversationId);
+    const membersList = await fetchConversationMembers(conversationId);
+    const payload = { ...mapConversation(conversation), members: membersList };
+
+    await emitConversationUpdate(conversationId);
+    io.to(`conversation:${conversationId}`).emit('conversation:updated', payload);
+
+    return res.json({ conversation: payload });
+  }
+);
+
 app.delete(
   '/api/conversations/:id/members/:userId',
   authGuard,
@@ -902,9 +1111,80 @@ app.delete(
     }
     await pool.query('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?', [conversationId, targetUserId]);
     leaveUserFromConversationSockets(targetUserId, conversationId);
+    await pool.query(
+      `DELETE fi FROM conversation_folder_items fi
+       JOIN conversation_folders f ON f.id = fi.folder_id
+       WHERE fi.conversation_id = ? AND f.user_id = ?`,
+      [conversationId, targetUserId]
+    );
+    if (targetUserId === req.auth.id) {
+      await emitFoldersUpdate(req.auth.id);
+    }
     const members = await fetchConversationMembers(conversationId);
     await emitConversationUpdate(conversationId, members.map((m) => m.id));
     emitToUser(targetUserId, 'conversation:member-removed', { conversationId });
+    return res.json({ members });
+  }
+);
+
+app.post(
+  '/api/conversations/:id/admins',
+  authGuard,
+  param('id').isInt(),
+  body('userId').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = Number(req.params.id);
+    const targetUserId = Number(req.body.userId);
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership || membership.role !== 'owner') {
+      return res.status(403).json({ message: 'Только создатель беседы может назначать администраторов' });
+    }
+    const targetMembership = await ensureMembership(conversationId, targetUserId);
+    if (!targetMembership) {
+      return res.status(404).json({ message: 'Пользователь не состоит в беседе' });
+    }
+    if (targetMembership.role === 'owner') {
+      return res.status(400).json({ message: 'Создателя нельзя изменить' });
+    }
+    await pool.query(
+      'UPDATE conversation_members SET role = ? WHERE conversation_id = ? AND user_id = ?',
+      ['admin', conversationId, targetUserId]
+    );
+    const members = await fetchConversationMembers(conversationId);
+    await emitConversationUpdate(conversationId, members.map((m) => m.id));
+    io.to(`conversation:${conversationId}`).emit('conversation:members', { conversationId, members });
+    return res.json({ members });
+  }
+);
+
+app.delete(
+  '/api/conversations/:id/admins/:userId',
+  authGuard,
+  param('id').isInt(),
+  param('userId').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = Number(req.params.id);
+    const targetUserId = Number(req.params.userId);
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership || membership.role !== 'owner') {
+      return res.status(403).json({ message: 'Только создатель беседы может снимать администраторов' });
+    }
+    const targetMembership = await ensureMembership(conversationId, targetUserId);
+    if (!targetMembership) {
+      return res.status(404).json({ message: 'Пользователь не состоит в беседе' });
+    }
+    if (targetMembership.role === 'owner') {
+      return res.status(400).json({ message: 'Создателя нельзя изменить' });
+    }
+    await pool.query(
+      'UPDATE conversation_members SET role = ? WHERE conversation_id = ? AND user_id = ?',
+      ['member', conversationId, targetUserId]
+    );
+    const members = await fetchConversationMembers(conversationId);
+    await emitConversationUpdate(conversationId, members.map((m) => m.id));
+    io.to(`conversation:${conversationId}`).emit('conversation:members', { conversationId, members });
     return res.json({ members });
   }
 );
@@ -947,6 +1227,7 @@ app.post(
   param('id').isInt(),
   body('content').optional().isLength({ max: 4000 }),
   body('attachments').optional().isArray({ max: 10 }),
+  body('parentId').optional().isInt({ min: 1 }),
   validationProblem,
   async (req, res) => {
     const conversationId = Number(req.params.id);
@@ -957,6 +1238,7 @@ app.post(
 
     const content = typeof req.body.content === 'string' ? req.body.content.trim() : '';
     const attachmentIds = Array.isArray(req.body.attachments) ? req.body.attachments : [];
+    const parentId = req.body.parentId ? Number(req.body.parentId) : null;
 
     if (!content && !attachmentIds.length) {
       return res.status(400).json({ message: 'Сообщение не может быть пустым' });
@@ -964,9 +1246,55 @@ app.post(
 
     const attachments = await attachFiles(req.auth.id, attachmentIds);
 
+    let replySnapshot = null;
+    if (parentId) {
+      const [parentRows] = await pool.query(
+        `SELECT m.id, m.conversation_id, m.content, m.attachments, u.id AS user_id, u.display_name, u.username, u.public_id
+         FROM messages m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.id = ?
+         LIMIT 1`,
+        [parentId]
+      );
+      if (!parentRows.length || parentRows[0].conversation_id !== conversationId) {
+        return res.status(400).json({ message: 'Нельзя ответить на сообщение из другой беседы' });
+      }
+      const parent = parentRows[0];
+      const parentAttachments = safeJsonParse(parent.attachments, []);
+      replySnapshot = {
+        id: parent.id,
+        content: parent.content ? String(parent.content).slice(0, 400) : null,
+        attachments: Array.isArray(parentAttachments)
+          ? parentAttachments.slice(0, 3).map((item) => {
+              const normalized = normalizeAttachment(item);
+              return normalized
+                ? {
+                    kind: normalized.kind,
+                    url: normalized.url,
+                    originalName: normalized.originalName
+                  }
+                : null;
+            }).filter(Boolean)
+          : [],
+        user: {
+          id: parent.user_id,
+          displayName: parent.display_name,
+          username: parent.username,
+          publicId: parent.public_id
+        }
+      };
+    }
+
     const [result] = await pool.query(
-      'INSERT INTO messages (conversation_id, user_id, content, attachments) VALUES (?, ?, ?, ?)',
-      [conversationId, req.auth.id, content || null, attachments.length ? JSON.stringify(attachments) : null]
+      'INSERT INTO messages (conversation_id, user_id, content, attachments, parent_id, reply_snapshot) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        conversationId,
+        req.auth.id,
+        content || null,
+        attachments.length ? JSON.stringify(attachments) : null,
+        parentId || null,
+        replySnapshot ? JSON.stringify(replySnapshot) : null
+      ]
     );
     const message = await fetchMessageById(result.insertId, req.auth.id);
     await updateConversationTimestamp(conversationId);
@@ -1059,6 +1387,322 @@ app.post(
     const message = await fetchMessageById(messageId, req.auth.id);
     io.to(`conversation:${conversationId}`).emit('message:updated', message);
     return res.json({ message });
+  }
+);
+
+app.get(
+  '/api/conversations/:id/pins',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = Number(req.params.id);
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+    const pins = await fetchPinnedMessages(conversationId, req.auth.id);
+    return res.json({ pins });
+  }
+);
+
+app.post(
+  '/api/messages/:id/pin',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const messageId = Number(req.params.id);
+    const [rows] = await pool.query('SELECT conversation_id FROM messages WHERE id = ? LIMIT 1', [messageId]);
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Сообщение не найдено' });
+    }
+    const conversationId = rows[0].conversation_id;
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      return res.status(403).json({ message: 'Только администраторы могут закреплять сообщения' });
+    }
+
+    await pool.query(
+      'INSERT IGNORE INTO conversation_pins (conversation_id, message_id, pinned_by) VALUES (?, ?, ?)',
+      [conversationId, messageId, req.auth.id]
+    );
+
+    const [pinRows] = await pool.query(
+      'SELECT id FROM conversation_pins WHERE conversation_id = ? ORDER BY pinned_at DESC',
+      [conversationId]
+    );
+    if (pinRows.length > MAX_PINNED_MESSAGES) {
+      const excess = pinRows.slice(MAX_PINNED_MESSAGES);
+      const excessIds = excess.map((row) => row.id);
+      await pool.query('DELETE FROM conversation_pins WHERE id IN (?)', [excessIds]);
+    }
+
+    await broadcastPinnedMessages(conversationId);
+    const pins = await fetchPinnedMessages(conversationId, req.auth.id);
+    return res.status(201).json({ pins });
+  }
+);
+
+app.delete(
+  '/api/messages/:id/pin',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const messageId = Number(req.params.id);
+    const [rows] = await pool.query('SELECT conversation_id FROM messages WHERE id = ? LIMIT 1', [messageId]);
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Сообщение не найдено' });
+    }
+    const conversationId = rows[0].conversation_id;
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+    if (!['owner', 'admin'].includes(membership.role)) {
+      return res.status(403).json({ message: 'Только администраторы могут снимать закрепы' });
+    }
+
+    await pool.query('DELETE FROM conversation_pins WHERE conversation_id = ? AND message_id = ?', [conversationId, messageId]);
+    await broadcastPinnedMessages(conversationId);
+    const pins = await fetchPinnedMessages(conversationId, req.auth.id);
+    return res.json({ pins });
+  }
+);
+
+app.post(
+  '/api/messages/:id/forward',
+  authGuard,
+  param('id').isInt(),
+  body('conversationId').optional().isInt({ min: 1 }),
+  body('username').optional().isString().isLength({ min: 3, max: 64 }),
+  body('content').optional().isLength({ max: 4000 }),
+  validationProblem,
+  async (req, res) => {
+    const messageId = Number(req.params.id);
+    const targetConversationIdRaw = req.body.conversationId ? Number(req.body.conversationId) : null;
+    const rawIdentifier = typeof req.body.username === 'string' ? req.body.username.trim() : '';
+
+    if (!targetConversationIdRaw && !rawIdentifier) {
+      return res.status(400).json({ message: 'Укажите беседу или собеседника для пересылки' });
+    }
+
+    const original = await fetchMessageById(messageId, req.auth.id);
+    if (!original) {
+      return res.status(404).json({ message: 'Сообщение не найдено' });
+    }
+
+    const membership = await ensureMembership(original.conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+
+    let targetConversationId = targetConversationIdRaw;
+    let conversationPayload = null;
+
+    if (rawIdentifier) {
+      let user = await findUserByUsername(rawIdentifier.toLowerCase());
+      if (!user && rawIdentifier.length >= 4) {
+        user = await findUserByPublicId(rawIdentifier.toUpperCase());
+      }
+      if (!user) {
+        return res.status(404).json({ message: 'Пользователь не найден' });
+      }
+      if (user.id === req.auth.id) {
+        return res.status(400).json({ message: 'Нельзя переслать сообщение самому себе' });
+      }
+      const directResult = await ensureDirectConversationBetween(req.auth.id, user);
+      targetConversationId = directResult.conversationId;
+      conversationPayload = directResult.payload;
+    }
+
+    if (!targetConversationId) {
+      return res.status(400).json({ message: 'Беседа для пересылки не найдена' });
+    }
+
+    const targetMembership = await ensureMembership(targetConversationId, req.auth.id);
+    if (!targetMembership) {
+      return res.status(403).json({ message: 'Вы не состоите в выбранной беседе' });
+    }
+
+    const content = typeof req.body.content === 'string' ? req.body.content.trim() : '';
+    const attachmentsData = original.attachments?.length ? JSON.stringify(original.attachments) : null;
+    const forwardMetadata = {
+      messageId: original.id,
+      conversationId: original.conversationId,
+      user: original.user
+        ? {
+            id: original.user.id,
+            displayName: original.user.displayName,
+            username: original.user.username,
+            publicId: original.user.publicId,
+            avatarUrl: original.user.avatarUrl,
+            avatarColor: original.user.avatarColor
+          }
+        : null,
+      createdAt: original.createdAt
+    };
+
+    const [result] = await pool.query(
+      'INSERT INTO messages (conversation_id, user_id, content, attachments, forwarded_from_message_id, forward_metadata) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        targetConversationId,
+        req.auth.id,
+        content || null,
+        attachmentsData,
+        original.id,
+        JSON.stringify(forwardMetadata)
+      ]
+    );
+
+    const message = await fetchMessageById(result.insertId, req.auth.id);
+    await updateConversationTimestamp(targetConversationId);
+    await emitConversationUpdate(targetConversationId);
+    io.to(`conversation:${targetConversationId}`).emit('message:created', message);
+
+    return res.status(201).json({
+      message,
+      conversationId: targetConversationId,
+      conversation: conversationPayload
+    });
+  }
+);
+
+app.get('/api/folders', authGuard, async (req, res) => {
+  const folders = await fetchFolders(req.auth.id);
+  return res.json({ folders });
+});
+
+app.post(
+  '/api/folders',
+  authGuard,
+  body('title').isLength({ min: 2, max: 60 }),
+  body('color').optional().isString(),
+  validationProblem,
+  async (req, res) => {
+    const title = req.body.title.trim();
+    const color = req.body.color && isValidHexColor(req.body.color) ? req.body.color.trim() : null;
+    const [result] = await pool.query(
+      'INSERT INTO conversation_folders (user_id, title, color) VALUES (?, ?, ?)',
+      [req.auth.id, title, color]
+    );
+    await emitFoldersUpdate(req.auth.id);
+    const folders = await fetchFolders(req.auth.id);
+    const folder = folders.find((item) => item.id === result.insertId) || null;
+    return res.status(201).json({ folder, folders });
+  }
+);
+
+app.put(
+  '/api/folders/:id',
+  authGuard,
+  param('id').isInt(),
+  body('title').optional().isLength({ min: 2, max: 60 }),
+  body('color').optional().isString(),
+  validationProblem,
+  async (req, res) => {
+    const folderId = Number(req.params.id);
+    const [rows] = await pool.query('SELECT user_id FROM conversation_folders WHERE id = ? LIMIT 1', [folderId]);
+    if (!rows.length || rows[0].user_id !== req.auth.id) {
+      return res.status(404).json({ message: 'Папка не найдена' });
+    }
+
+    const fields = [];
+    const params = [];
+    if (typeof req.body.title === 'string') {
+      const title = req.body.title.trim();
+      if (!title) {
+        return res.status(400).json({ message: 'Название папки не может быть пустым' });
+      }
+      fields.push('title = ?');
+      params.push(title);
+    }
+    if (req.body.color !== undefined) {
+      const color = req.body.color && isValidHexColor(req.body.color) ? req.body.color.trim() : null;
+      fields.push('color = ?');
+      params.push(color);
+    }
+    if (!fields.length) {
+      return res.status(400).json({ message: 'Нет изменений для сохранения' });
+    }
+
+    params.push(folderId);
+    await pool.query(`UPDATE conversation_folders SET ${fields.join(', ')} WHERE id = ?`, params);
+    await emitFoldersUpdate(req.auth.id);
+    const folders = await fetchFolders(req.auth.id);
+    const folder = folders.find((item) => item.id === folderId) || null;
+    return res.json({ folder, folders });
+  }
+);
+
+app.delete(
+  '/api/folders/:id',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const folderId = Number(req.params.id);
+    const [rows] = await pool.query('SELECT user_id FROM conversation_folders WHERE id = ? LIMIT 1', [folderId]);
+    if (!rows.length || rows[0].user_id !== req.auth.id) {
+      return res.status(404).json({ message: 'Папка не найдена' });
+    }
+    await pool.query('DELETE FROM conversation_folders WHERE id = ?', [folderId]);
+    await emitFoldersUpdate(req.auth.id);
+    return res.status(204).send();
+  }
+);
+
+app.post(
+  '/api/folders/:id/conversations',
+  authGuard,
+  param('id').isInt(),
+  body('conversationId').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const folderId = Number(req.params.id);
+    const conversationId = Number(req.body.conversationId);
+    const [rows] = await pool.query('SELECT user_id FROM conversation_folders WHERE id = ? LIMIT 1', [folderId]);
+    if (!rows.length || rows[0].user_id !== req.auth.id) {
+      return res.status(404).json({ message: 'Папка не найдена' });
+    }
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Вы не состоите в этой беседе' });
+    }
+    const position = Math.floor(Date.now() / 1000);
+    await pool.query(
+      `INSERT INTO conversation_folder_items (folder_id, conversation_id, position)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE position = VALUES(position)`,
+      [folderId, conversationId, position]
+    );
+    await emitFoldersUpdate(req.auth.id);
+    const folders = await fetchFolders(req.auth.id);
+    return res.status(201).json({ folders });
+  }
+);
+
+app.delete(
+  '/api/folders/:id/conversations/:conversationId',
+  authGuard,
+  param('id').isInt(),
+  param('conversationId').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const folderId = Number(req.params.id);
+    const conversationId = Number(req.params.conversationId);
+    const [rows] = await pool.query('SELECT user_id FROM conversation_folders WHERE id = ? LIMIT 1', [folderId]);
+    if (!rows.length || rows[0].user_id !== req.auth.id) {
+      return res.status(404).json({ message: 'Папка не найдена' });
+    }
+    await pool.query('DELETE FROM conversation_folder_items WHERE folder_id = ? AND conversation_id = ?', [folderId, conversationId]);
+    await emitFoldersUpdate(req.auth.id);
+    const folders = await fetchFolders(req.auth.id);
+    return res.json({ folders });
   }
 );
 

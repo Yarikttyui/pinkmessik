@@ -69,6 +69,8 @@ async function initDb() {
       type ENUM('direct','group') NOT NULL DEFAULT 'group',
       title VARCHAR(100) NOT NULL,
       description TEXT NULL,
+      avatar_attachment_id CHAR(36) NULL,
+      avatar_url VARCHAR(255) NULL,
       creator_id INT NOT NULL,
       is_private TINYINT(1) NOT NULL DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -98,6 +100,9 @@ async function initDb() {
       content TEXT NULL,
       attachments JSON NULL,
       parent_id BIGINT NULL,
+      reply_snapshot JSON NULL,
+      forwarded_from_message_id BIGINT NULL,
+      forward_metadata JSON NULL,
       is_edited TINYINT(1) NOT NULL DEFAULT 0,
       edited_at DATETIME NULL,
       deleted_at DATETIME NULL,
@@ -105,6 +110,7 @@ async function initDb() {
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE SET NULL,
+      FOREIGN KEY (forwarded_from_message_id) REFERENCES messages(id) ON DELETE SET NULL,
       INDEX idx_messages_conversation_created_at (conversation_id, created_at DESC)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
@@ -140,6 +146,43 @@ async function initDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS conversation_pins (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      conversation_id INT NOT NULL,
+      message_id BIGINT NOT NULL,
+      pinned_by INT NOT NULL,
+      pinned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_conversation_message (conversation_id, message_id),
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (pinned_by) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS conversation_folders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      title VARCHAR(60) NOT NULL,
+      color CHAR(7) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS conversation_folder_items (
+      folder_id INT NOT NULL,
+      conversation_id INT NOT NULL,
+      position INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (folder_id, conversation_id),
+      FOREIGN KEY (folder_id) REFERENCES conversation_folders(id) ON DELETE CASCADE,
+      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
   await ensureColumns();
   await ensureUploadsDir();
   await ensureSeedData();
@@ -157,6 +200,11 @@ async function ensureColumns() {
   await ensureColumn(db, 'attachments', 'duration_ms', "ALTER TABLE attachments ADD COLUMN duration_ms INT NULL AFTER file_type");
   await ensureColumn(db, 'attachments', 'waveform', "ALTER TABLE attachments ADD COLUMN waveform JSON NULL AFTER duration_ms");
   await ensureColumn(db, 'attachments', 'is_circle', "ALTER TABLE attachments ADD COLUMN is_circle TINYINT(1) NOT NULL DEFAULT 0 AFTER waveform");
+  await ensureColumn(db, 'conversations', 'avatar_attachment_id', "ALTER TABLE conversations ADD COLUMN avatar_attachment_id CHAR(36) NULL AFTER description");
+  await ensureColumn(db, 'conversations', 'avatar_url', "ALTER TABLE conversations ADD COLUMN avatar_url VARCHAR(255) NULL AFTER avatar_attachment_id");
+  await ensureColumn(db, 'messages', 'reply_snapshot', "ALTER TABLE messages ADD COLUMN reply_snapshot JSON NULL AFTER parent_id");
+  await ensureColumn(db, 'messages', 'forwarded_from_message_id', "ALTER TABLE messages ADD COLUMN forwarded_from_message_id BIGINT NULL AFTER reply_snapshot");
+  await ensureColumn(db, 'messages', 'forward_metadata', "ALTER TABLE messages ADD COLUMN forward_metadata JSON NULL AFTER forwarded_from_message_id");
   await ensureIndex(db, 'attachments', 'idx_attachments_user_created', 'CREATE INDEX idx_attachments_user_created ON attachments (user_id, created_at)');
 
   await db.query("UPDATE attachments SET kind = 'file' WHERE kind IS NULL OR kind = ''");

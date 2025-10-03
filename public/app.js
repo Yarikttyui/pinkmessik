@@ -141,6 +141,12 @@
     localStorage.removeItem('pink:user');
   }
 
+  function handleUnauthorized() {
+    showToast('Требуется авторизация', 'error');
+    clearSession();
+    showAuth();
+  }
+
   async function apiRequest(path, options = {}) {
     const headers = { ...API_DEFAULT_HEADERS, ...(options.headers || {}) };
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -150,6 +156,10 @@
       data = await response.json();
     } catch (error) {
       data = {};
+    }
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error('Требуется авторизация');
     }
     if (!response.ok) {
       throw new Error(data?.message || 'Произошла ошибка');
@@ -165,6 +175,10 @@
       headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined
     });
     const data = await response.json();
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error('Требуется авторизация');
+    }
     if (!response.ok) {
       throw new Error(data?.message || 'Не удалось загрузить файл');
     }

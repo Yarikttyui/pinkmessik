@@ -142,8 +142,8 @@ async function initDb() {
 async function ensureColumns() {
   const db = getPool();
 
-  await db.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS public_id CHAR(16) NOT NULL DEFAULT ''");
-  await db.query("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS share_code CHAR(12) NOT NULL DEFAULT ''");
+  await ensureColumn(db, 'users', 'public_id', "ALTER TABLE users ADD COLUMN public_id CHAR(16) NOT NULL DEFAULT '' AFTER id");
+  await ensureColumn(db, 'conversations', 'share_code', "ALTER TABLE conversations ADD COLUMN share_code CHAR(12) NOT NULL DEFAULT '' AFTER id");
 
   await db.query(`
     UPDATE users
@@ -160,6 +160,16 @@ async function ensureColumns() {
 
   await db.query('ALTER TABLE users MODIFY public_id CHAR(16) NOT NULL UNIQUE');
   await db.query('ALTER TABLE conversations MODIFY share_code CHAR(12) NOT NULL UNIQUE');
+}
+
+async function ensureColumn(db, table, column, alterSql) {
+  const [rows] = await db.query(
+    `SELECT COUNT(*) AS count FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [config.db.database, table, column]
+  );
+  if (rows[0].count === 0) {
+    await db.query(alterSql);
+  }
 }
 
 async function ensureUploadsDir() {

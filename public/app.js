@@ -65,11 +65,47 @@
     memberProfileBio: document.getElementById('memberProfileBio'),
     memberProfileMessageBtn: document.getElementById('memberProfileMessageBtn'),
     memberProfileCopyBtn: document.getElementById('memberProfileCopyBtn'),
+    memberProfileInviteToggle: document.getElementById('memberProfileInviteToggle'),
+    memberProfileInviteSection: document.getElementById('memberProfileInviteSection'),
+    memberProfileInviteSelect: document.getElementById('memberProfileInviteSelect'),
+    memberProfileInviteBtn: document.getElementById('memberProfileInviteBtn'),
     mediaViewer: document.getElementById('mediaViewer'),
     mediaViewerImage: document.getElementById('mediaViewerImage'),
     mediaViewerVideo: document.getElementById('mediaViewerVideo'),
     mediaViewerCaption: document.getElementById('mediaViewerCaption'),
     mediaViewerDownload: document.getElementById('mediaViewerDownload'),
+    folderPanel: document.getElementById('folderPanel'),
+    folderCreateBtn: document.getElementById('folderCreateBtn'),
+    folderAllBtn: document.getElementById('folderAllBtn'),
+    folderList: document.getElementById('folderList'),
+    folderModal: document.getElementById('folderModal'),
+    folderForm: document.getElementById('folderForm'),
+    folderTitleInput: document.getElementById('folderTitleInput'),
+    folderColorInput: document.getElementById('folderColorInput'),
+    detailsFolders: document.getElementById('detailsFolders'),
+    favoritesBtn: document.getElementById('favoritesBtn'),
+    favoritesModal: document.getElementById('favoritesModal'),
+    favoritesList: document.getElementById('favoritesList'),
+    conversationSettingsBtn: document.getElementById('conversationSettingsBtn'),
+    conversationModal: document.getElementById('conversationModal'),
+    conversationForm: document.getElementById('conversationForm'),
+    conversationAvatarPreview: document.getElementById('conversationAvatarPreview'),
+    conversationAvatarInput: document.getElementById('conversationAvatarInput'),
+    conversationAvatarRemoveBtn: document.getElementById('conversationAvatarRemoveBtn'),
+    conversationTitleInput: document.getElementById('conversationTitleInput'),
+    conversationDescriptionInput: document.getElementById('conversationDescriptionInput'),
+    conversationNotificationsToggle: document.getElementById('conversationNotificationsToggle'),
+    reactionMenu: document.getElementById('reactionMenu'),
+    callToggleBtn: document.getElementById('callToggleBtn'),
+    callOverlay: document.getElementById('callOverlay'),
+    callCloseBtn: document.getElementById('callCloseBtn'),
+    callParticipants: document.getElementById('callParticipants'),
+    callMedia: document.getElementById('callMedia'),
+    callTitle: document.getElementById('callTitle'),
+    callSubtitle: document.getElementById('callSubtitle'),
+    callMicToggle: document.getElementById('callMicToggle'),
+    callScreenToggle: document.getElementById('callScreenToggle'),
+    callLeaveBtn: document.getElementById('callLeaveBtn'),
     toast: document.getElementById('toast')
   };
 
@@ -99,11 +135,22 @@
     supportsMediaRecording: false,
     activeMember: null,
     activeMediaAttachment: null,
+    folders: [],
+    activeFolderId: 'all',
+    favorites: [],
+    favoritesLoaded: false,
     profileDraft: {
       avatarAttachmentId: null,
       avatarUrl: null,
       removeAvatar: false
-    }
+    },
+    conversationDraft: {
+      avatarAttachmentId: null,
+      avatarUrl: null,
+      removeAvatar: false
+    },
+    activeCircleVideo: null,
+    call: null
   };
 
   const API_DEFAULT_HEADERS = { 'Content-Type': 'application/json' };
@@ -307,15 +354,30 @@
 
   function setAvatar(node, { url, color, text } = {}) {
     if (!node) return;
+    const existingImg = node.querySelector('img[data-avatar-img]');
     if (url) {
       node.classList.add('avatar--image');
-      node.style.backgroundImage = `url(${url})`;
-      node.style.backgroundColor = 'transparent';
       node.style.background = 'transparent';
+      node.style.backgroundImage = 'none';
+      node.style.backgroundColor = 'transparent';
       node.textContent = '';
+      const img = existingImg || document.createElement('img');
+      img.dataset.avatarImg = 'true';
+      img.decoding = 'async';
+      img.loading = 'lazy';
+      img.alt = text || 'avatar';
+      if (!img.isConnected) {
+        node.append(img);
+      }
+      if (img.src !== url) {
+        img.src = url;
+      }
     } else {
       node.classList.remove('avatar--image');
-      node.style.backgroundImage = '';
+      if (existingImg) {
+        existingImg.remove();
+      }
+      node.style.backgroundImage = 'none';
       const bg = color || '#ff7aa2';
       node.style.backgroundColor = bg;
       node.style.background = bg;
@@ -404,6 +466,17 @@
     state.searchQuery = '';
     state.activeMember = null;
     state.activeMediaAttachment = null;
+    state.folders = [];
+    state.activeFolderId = 'all';
+    state.favorites = [];
+    state.favoritesLoaded = false;
+    state.conversationDraft = {
+      avatarAttachmentId: null,
+      avatarUrl: null,
+      removeAvatar: false
+    };
+    state.activeCircleVideo = null;
+    state.call = null;
     if (state.searchTimer) {
       clearTimeout(state.searchTimer);
       state.searchTimer = null;
@@ -598,7 +671,16 @@
   }
 
   function closeAllModals() {
-    [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal, elements.memberModal].forEach((modal) => {
+    [
+      elements.profileModal,
+      elements.groupModal,
+      elements.directModal,
+      elements.joinModal,
+      elements.memberModal,
+      elements.folderModal,
+      elements.conversationModal,
+      elements.favoritesModal
+    ].forEach((modal) => {
       if (modal) modal.classList.add('hidden');
     });
   }
@@ -609,7 +691,16 @@
     });
   });
 
-  [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal, elements.memberModal].forEach((modal) => {
+  [
+    elements.profileModal,
+    elements.groupModal,
+    elements.directModal,
+    elements.joinModal,
+    elements.memberModal,
+    elements.folderModal,
+    elements.conversationModal,
+    elements.favoritesModal
+  ].forEach((modal) => {
     modal?.addEventListener('click', (event) => {
       if (event.target === modal) closeModal(modal);
     });
@@ -840,6 +931,56 @@
     }
   });
 
+  if (elements.folderAllBtn) {
+    elements.folderAllBtn.addEventListener('click', () => setActiveFolder('all'));
+  }
+
+  if (elements.folderCreateBtn && elements.folderModal && elements.folderForm) {
+    elements.folderCreateBtn.addEventListener('click', () => {
+      elements.folderForm.reset();
+      if (elements.folderColorInput) {
+        elements.folderColorInput.value = '#ffacd8';
+      }
+      openModal(elements.folderModal);
+    });
+
+    elements.folderForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      try {
+        const title = elements.folderTitleInput?.value.trim();
+        const color = elements.folderColorInput?.value || null;
+        if (!title || title.length < 2) {
+          showToast('Название папки слишком короткое', 'error');
+          return;
+        }
+        const body = { title };
+        if (color) body.color = color;
+        const data = await apiRequest('/api/folders', {
+          method: 'POST',
+          body: JSON.stringify(body)
+        });
+        if (data?.folders) {
+          setFolders(data.folders);
+        }
+        closeModal(elements.folderModal);
+        showToast('Папка создана', 'success');
+      } catch (error) {
+        showToast(error.message || 'Не удалось создать папку', 'error');
+      }
+    });
+  }
+
+  if (elements.favoritesBtn && elements.favoritesModal) {
+    elements.favoritesBtn.addEventListener('click', async () => {
+      try {
+        await loadFavorites();
+        openModal(elements.favoritesModal);
+      } catch (error) {
+        // Ошибка уже показана в loadFavorites
+      }
+    });
+  }
+
   document.querySelectorAll('[data-copy]').forEach((btn) => {
     const targetId = btn.getAttribute('data-copy');
     btn.addEventListener('click', async () => {
@@ -977,14 +1118,88 @@
     openModal(elements.memberModal);
   }
 
+  function getActiveFolder() {
+    if (state.activeFolderId === 'all') return null;
+    const idNum = Number(state.activeFolderId);
+    return state.folders.find((folder) => Number(folder.id) === idNum) || null;
+  }
+
+  function setFolders(folders = []) {
+    const normalized = Array.isArray(folders)
+      ? folders.map((folder) => ({
+          id: folder.id,
+          title: folder.title,
+          color: folder.color || null,
+          conversations: Array.isArray(folder.conversations)
+            ? folder.conversations.map((value) => Number(value))
+            : []
+        }))
+      : [];
+    state.folders = normalized;
+    const activeFolder = getActiveFolder();
+    if (!activeFolder && state.activeFolderId !== 'all') {
+      state.activeFolderId = 'all';
+    }
+    renderFolderChips();
+    if (state.currentConversationId) {
+      renderConversationFolders(state.currentConversationId);
+    }
+    renderConversationList();
+  }
+
+  async function loadFolders() {
+    try {
+      const data = await apiRequest('/api/folders');
+      setFolders(data?.folders || []);
+    } catch (error) {
+      console.warn('Не удалось загрузить папки', error);
+    }
+  }
+
+  function renderFolderChips() {
+    if (!elements.folderList) return;
+    elements.folderList.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    state.folders.forEach((folder) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip';
+      button.dataset.folderId = String(folder.id);
+      button.textContent = folder.title;
+      if (folder.color) {
+        button.style.borderColor = folder.color;
+        button.style.color = folder.color;
+      }
+      if (String(state.activeFolderId) === String(folder.id)) {
+        button.classList.add('active');
+      }
+      button.addEventListener('click', () => setActiveFolder(folder.id));
+      fragment.append(button);
+    });
+    elements.folderList.append(fragment);
+    if (elements.folderAllBtn) {
+      elements.folderAllBtn.classList.toggle('active', state.activeFolderId === 'all');
+    }
+  }
+
+  function setActiveFolder(folderId) {
+    const resolved = folderId == null ? 'all' : folderId;
+    state.activeFolderId = resolved === 'all' ? 'all' : Number(resolved);
+    renderFolderChips();
+    renderConversationList();
+  }
+
   function renderConversationList() {
     const filter = state.filter;
     elements.conversationList.innerHTML = '';
     const fragment = document.createDocumentFragment();
+    const activeFolder = getActiveFolder();
+    const allowed = activeFolder ? new Set(activeFolder.conversations) : null;
 
     state.conversationOrder.forEach((conversationId) => {
       const conversation = state.conversations.get(conversationId);
       if (!conversation) return;
+      if (allowed && !allowed.has(conversation.id)) return;
       const display = conversationDisplay(conversation);
       const haystack = `${display.title} ${display.subtitle}`.toLowerCase();
       if (filter && !haystack.includes(filter)) return;
@@ -1112,6 +1327,149 @@
     elements.memberList.append(fragment);
   }
 
+  async function toggleConversationFolder(folderId, conversationId, shouldHave, button) {
+    if (!folderId || !conversationId) return;
+    if (button) {
+      button.disabled = true;
+      button.classList.add('loading');
+    }
+    try {
+      if (shouldHave) {
+        const data = await apiRequest(`/api/folders/${folderId}/conversations`, {
+          method: 'POST',
+          body: JSON.stringify({ conversationId })
+        });
+        if (data?.folders) {
+          setFolders(data.folders);
+        }
+        showToast('Добавлено в папку', 'success');
+      } else {
+        const data = await apiRequest(`/api/folders/${folderId}/conversations/${conversationId}`, {
+          method: 'DELETE'
+        });
+        if (data?.folders) {
+          setFolders(data.folders);
+        }
+        showToast('Удалено из папки', 'info');
+      }
+    } catch (error) {
+      showToast(error.message || 'Не удалось обновить папку', 'error');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove('loading');
+      }
+    }
+  }
+
+  function renderConversationFolders(conversationId) {
+    if (!elements.detailsFolders) return;
+    const folders = state.folders;
+    if (!folders.length) {
+      elements.detailsFolders.classList.add('hidden');
+      elements.detailsFolders.innerHTML = '';
+      return;
+    }
+    const active = new Set(
+      folders
+        .filter((folder) => folder.conversations.includes(conversationId))
+        .map((folder) => folder.id)
+    );
+    elements.detailsFolders.classList.remove('hidden');
+    elements.detailsFolders.innerHTML = '';
+    const title = document.createElement('h4');
+    title.className = 'details-section-title';
+    title.textContent = 'Папки';
+    const list = document.createElement('div');
+    list.className = 'details-folders-list';
+    folders.forEach((folder) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip folder-chip';
+      button.textContent = folder.title;
+      button.dataset.folderId = String(folder.id);
+      if (folder.color) {
+        button.style.borderColor = folder.color;
+        button.style.color = folder.color;
+      }
+      if (active.has(folder.id)) {
+        button.classList.add('active');
+      }
+      button.addEventListener('click', () => {
+        const shouldHave = !active.has(folder.id);
+        toggleConversationFolder(folder.id, conversationId, shouldHave, button);
+      });
+      list.append(button);
+    });
+    elements.detailsFolders.append(title, list);
+  }
+
+  async function loadFavorites(force = false) {
+    if (state.favoritesLoaded && !force) {
+      renderFavorites();
+      return state.favorites;
+    }
+    try {
+      const data = await apiRequest('/api/favorites');
+      state.favorites = Array.isArray(data?.favorites) ? data.favorites : [];
+      state.favoritesLoaded = true;
+      renderFavorites();
+      return state.favorites;
+    } catch (error) {
+      showToast(error.message || 'Не удалось загрузить избранное', 'error');
+      throw error;
+    }
+  }
+
+  function renderFavorites() {
+    if (!elements.favoritesList) return;
+    const favorites = state.favorites;
+    elements.favoritesList.innerHTML = '';
+    if (!favorites.length) {
+      const empty = document.createElement('div');
+      empty.className = 'favorites-empty';
+      empty.textContent = 'Пока что здесь пусто. Добавьте сообщение в избранное, чтобы увидеть его здесь.';
+      elements.favoritesList.append(empty);
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    favorites.forEach((message) => {
+      const item = document.createElement('article');
+      item.className = 'favorites-item';
+      const header = document.createElement('div');
+      header.className = 'favorite-meta';
+      const conversation = state.conversations.get(message.conversationId);
+      const title = conversation ? conversationDisplay(conversation).title : 'Беседа';
+      const author = message.user?.displayName || message.user?.username || 'Вы';
+      header.innerHTML = `<span>${title}</span><span>${author} • ${formatDate(message.createdAt)}</span>`;
+      item.append(header);
+
+      if (message.content) {
+        const text = document.createElement('div');
+        text.className = 'favorite-text';
+        text.textContent = message.content;
+        item.append(text);
+      }
+
+      const attachments = Array.isArray(message.attachments) ? message.attachments.slice(0, 7) : [];
+      if (attachments.length) {
+        const gallery = document.createElement('div');
+        gallery.className = 'favorites-gallery';
+        attachments.forEach((attachment) => {
+          const node = renderAttachmentNode(attachment);
+          if (node) {
+            node.classList.add('favorite-media');
+            gallery.append(node);
+          }
+        });
+        item.append(gallery);
+      }
+
+      fragment.append(item);
+    });
+    elements.favoritesList.append(fragment);
+  }
+
   function updateConversationHeader(conversationId) {
     const conversation = state.conversations.get(conversationId);
     if (!conversation) return;
@@ -1197,6 +1555,13 @@
     reactBtn.textContent = '❤';
     actions.append(reactBtn);
     if (!message.deletedAt && isOwn) {
+      const favoriteBtn = document.createElement('button');
+      favoriteBtn.type = 'button';
+      favoriteBtn.className = 'action-favorite';
+      favoriteBtn.textContent = message.isFavorite ? '★' : '☆';
+      if (message.isFavorite) {
+        favoriteBtn.classList.add('active');
+      }
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'action-edit';
@@ -1205,7 +1570,7 @@
       deleteBtn.type = 'button';
       deleteBtn.className = 'action-delete';
       deleteBtn.textContent = 'Удалить';
-      actions.append(editBtn, deleteBtn);
+      actions.append(favoriteBtn, editBtn, deleteBtn);
     }
     bubble.append(actions);
 
@@ -1858,6 +2223,11 @@
       return;
     }
 
+    if (event.target.classList.contains('action-favorite')) {
+      toggleFavorite(message);
+      return;
+    }
+
     if (event.target.classList.contains('action-react')) {
       toggleReaction(message, '💩');
     }
@@ -1871,6 +2241,34 @@
       body: JSON.stringify({ emoji, action })
     }).catch((error) => showToast(error.message || 'Не удалось отправить реакцию', 'error'));
     state.socket?.emit('message:reaction', { messageId: message.id, emoji, action });
+  }
+
+  async function toggleFavorite(message) {
+    if (!message || message.user?.id !== state.user?.id) {
+      showToast('В избранное можно добавлять только свои сообщения', 'error');
+      return;
+    }
+    const currently = Boolean(message.isFavorite);
+    try {
+      if (currently) {
+        await apiRequest(`/api/messages/${message.id}/favorite`, { method: 'DELETE' });
+        addMessage({ ...message, isFavorite: false });
+        showToast('Удалено из избранного', 'info');
+      } else {
+        const data = await apiRequest(`/api/messages/${message.id}/favorite`, { method: 'POST' });
+        if (data?.message) {
+          addMessage(data.message);
+        } else {
+          addMessage({ ...message, isFavorite: true });
+        }
+        showToast('Добавлено в избранное', 'success');
+      }
+      if (state.favoritesLoaded) {
+        await loadFavorites(true);
+      }
+    } catch (error) {
+      showToast(error.message || 'Не удалось обновить избранное', 'error');
+    }
   }
 
   function findMessage(messageId) {
@@ -2030,8 +2428,9 @@
       item.classList.toggle('active', Number(item.dataset.conversationId) === conversationId);
     });
 
-    fetchMembers(conversationId).then(renderMembers);
-    updateConversationHeader(conversationId);
+  fetchMembers(conversationId).then(renderMembers);
+  updateConversationHeader(conversationId);
+  renderConversationFolders(conversationId);
     loadMessages(conversationId)
       .then(() => {
         renderMessages(conversationId);
@@ -2171,6 +2570,7 @@
       const data = await apiRequest('/api/profile');
       applyUser(data.user);
       upsertConversations(data.conversations || []);
+      await loadFolders();
       renderConversationList();
       if (!state.socket) {
         setupSocket();

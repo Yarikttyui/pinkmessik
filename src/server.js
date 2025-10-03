@@ -835,8 +835,19 @@ app.put(
       const updates = [];
       const params = [];
       if (typeof req.body.displayName === 'string') {
+        const displayName = req.body.displayName.trim();
+        if (!displayName) {
+          return res.status(400).json({ message: 'Имя не может быть пустым' });
+        }
+        const [ clashes ] = await pool.query(
+          'SELECT id FROM users WHERE LOWER(display_name) = LOWER(?) AND id != ? LIMIT 1',
+          [displayName, req.auth.id]
+        );
+        if (clashes.length) {
+          return res.status(409).json({ message: 'Такой ник уже занят' });
+        }
         updates.push('display_name = ?');
-        params.push(req.body.displayName.trim());
+        params.push(displayName);
       }
       if (typeof req.body.statusMessage === 'string') {
         updates.push('status_message = ?');

@@ -98,11 +98,19 @@
     video: ['video/webm', 'video/mp4', 'video/quicktime']
   };
 
-  state.supportsMediaRecording = Boolean(
-    typeof MediaRecorder !== 'undefined' &&
-    typeof navigator !== 'undefined' &&
-    navigator.mediaDevices?.getUserMedia
-  );
+  state.supportsMediaRecording = (() => {
+    if (typeof MediaRecorder === 'undefined' || typeof navigator === 'undefined') return false;
+    const hasUserMedia = Boolean(navigator.mediaDevices?.getUserMedia);
+    if (!hasUserMedia) return false;
+    try {
+      const voiceMime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mpeg'];
+      const circleMime = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+      const hasMime = [...voiceMime, ...circleMime].some((mime) => MediaRecorder.isTypeSupported?.(mime));
+      return hasMime || typeof MediaRecorder.isTypeSupported !== 'function';
+    } catch (error) {
+      return true;
+    }
+  })();
 
   if (!state.supportsMediaRecording) {
     if (elements.voiceRecordBtn) {
@@ -1171,6 +1179,7 @@
     elements.voiceRecordBtn.addEventListener('click', async () => {
       if (!state.supportsMediaRecording) {
         triggerFallbackRecording('voice');
+        setRecordingButtonState(null);
         return;
       }
       if (state.recording?.type === 'voice') {
@@ -1185,6 +1194,7 @@
     elements.circleRecordBtn.addEventListener('click', async () => {
       if (!state.supportsMediaRecording) {
         triggerFallbackRecording('circle');
+        setRecordingButtonState(null);
         return;
       }
       if (state.recording?.type === 'circle') {
@@ -1226,10 +1236,8 @@
   }
 
   function setRecordingButtonState(activeType) {
-    if (!state.supportsMediaRecording) {
-      if (elements.voiceRecordBtn) elements.voiceRecordBtn.classList.remove('active');
-      if (elements.circleRecordBtn) elements.circleRecordBtn.classList.remove('active');
-      return;
+    if (activeType && !state.supportsMediaRecording) {
+      activeType = null;
     }
     if (elements.voiceRecordBtn) {
       elements.voiceRecordBtn.classList.toggle('active', activeType === 'voice');
@@ -1370,7 +1378,8 @@
         : { audio: true, video: { facingMode: 'user' } };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const mimeType = getRecorderMimeType(type);
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  const options = mimeType ? { mimeType } : undefined;
+  const recorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
       const chunks = [];
       const recording = {
         type,
@@ -1394,7 +1403,7 @@
       updateRecordingIndicator();
       if (state.recordingTimer) clearInterval(state.recordingTimer);
       state.recordingTimer = setInterval(updateRecordingIndicator, 200);
-      const maxDuration = type === 'voice' ? 120000 : 20000;
+  const maxDuration = 60000;
       recording.timeoutId = setTimeout(() => {
         stopRecording();
         showToast('Время записи истекло', 'info');
@@ -1403,6 +1412,7 @@
     } catch (error) {
       console.error('Запуск записи не удался', error);
       showToast('Нужно разрешить доступ к микрофону/камере', 'error');
+      triggerFallbackRecording(type);
       setRecordingButtonState(null);
       state.recording = null;
       updateRecordingIndicator();

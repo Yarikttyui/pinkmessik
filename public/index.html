@@ -54,6 +54,7 @@
           <div class="profile-meta">
             <h2 id="profileName"></h2>
             <p id="profileStatus"></p>
+            <p class="profile-bio muted" id="profileBio"></p>
           </div>
         </div>
         <div class="profile-codes">
@@ -74,6 +75,7 @@
       <div class="sidebar-search">
         <input type="text" id="conversationFilter" placeholder="Поиск беседы или пользователя">
       </div>
+      <div class="search-results hidden" id="searchResults"></div>
       <div class="conversation-list" id="conversationList"></div>
     </aside>
 
@@ -133,11 +135,25 @@
     <div class="modal-content">
       <h2>Настройки профиля</h2>
       <form id="profileForm">
+        <div class="profile-avatar-grid">
+          <div class="avatar avatar-preview" id="profileAvatarPreview"></div>
+          <div class="avatar-upload">
+            <label class="ghost file-upload">
+              <input type="file" id="profileAvatarInput" accept="image/*" hidden>
+              Загрузить фото
+            </label>
+            <button type="button" class="ghost tiny" id="profileAvatarRemoveBtn">Удалить фото</button>
+            <p class="upload-hint">PNG, JPG или WEBP до 5 МБ</p>
+          </div>
+        </div>
         <label>Имя
           <input type="text" name="displayName" minlength="2" maxlength="60" required>
         </label>
         <label>Статус
           <input type="text" name="statusMessage" maxlength="160" placeholder="Например: На связи">
+        </label>
+        <label>О себе
+          <textarea name="bio" rows="3" maxlength="500" placeholder="Расскажите о себе, чем увлекаетесь"></textarea>
         </label>
         <div class="modal-actions">
           <button type="button" class="ghost" data-close>Отмена</button>

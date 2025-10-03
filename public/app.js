@@ -9,6 +9,7 @@
     profileAvatar: document.getElementById('profileAvatar'),
     profileName: document.getElementById('profileName'),
     profileStatus: document.getElementById('profileStatus'),
+  profileBio: document.getElementById('profileBio'),
     profileCode: document.getElementById('profileCode'),
     profileEditBtn: document.getElementById('profileEditBtn'),
     logoutBtn: document.getElementById('logoutBtn'),
@@ -16,6 +17,7 @@
     newDirectBtn: document.getElementById('newDirectBtn'),
     joinByCodeBtn: document.getElementById('joinByCodeBtn'),
     conversationFilter: document.getElementById('conversationFilter'),
+  searchResults: document.getElementById('searchResults'),
     conversationList: document.getElementById('conversationList'),
     chatPlaceholder: document.getElementById('chatPlaceholder'),
     chatPane: document.getElementById('chatPane'),
@@ -38,6 +40,9 @@
     attachmentBar: document.getElementById('attachmentBar'),
     profileModal: document.getElementById('profileModal'),
     profileForm: document.getElementById('profileForm'),
+  profileAvatarPreview: document.getElementById('profileAvatarPreview'),
+  profileAvatarInput: document.getElementById('profileAvatarInput'),
+  profileAvatarRemoveBtn: document.getElementById('profileAvatarRemoveBtn'),
     groupModal: document.getElementById('groupModal'),
     groupForm: document.getElementById('groupForm'),
     directModal: document.getElementById('directModal'),
@@ -62,7 +67,15 @@
     pendingAttachments: [],
     currentConversationId: null,
     sending: false,
-    filter: ''
+    filter: '',
+    searchResults: [],
+    searchQuery: '',
+    searchTimer: null,
+    profileDraft: {
+      avatarAttachmentId: null,
+      avatarUrl: null,
+      removeAvatar: false
+    }
   };
 
   const API_DEFAULT_HEADERS = { 'Content-Type': 'application/json' };
@@ -77,6 +90,139 @@
       .toUpperCase();
   }
 
+  function renderSearchResults() {
+    if (!elements.searchResults) return;
+    const container = elements.searchResults;
+    container.innerHTML = '';
+    if (state.searchQuery.length < 2) {
+      container.classList.add('hidden');
+      return;
+    }
+    if (!state.searchResults.length) {
+      const empty = document.createElement('div');
+      empty.className = 'search-empty';
+      empty.textContent = 'Ничего не найдено';
+      container.append(empty);
+      container.classList.remove('hidden');
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    state.searchResults.forEach((user) => {
+      const item = document.createElement('div');
+      item.className = 'search-result';
+
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      setAvatar(avatar, {
+        url: user.avatarUrl,
+        color: user.avatarColor,
+        text: initials(user.displayName || user.username)
+      });
+
+      const info = document.createElement('div');
+      info.className = 'search-result-info';
+      const title = document.createElement('strong');
+      title.textContent = user.displayName || user.username;
+      const subtitle = document.createElement('span');
+  subtitle.textContent = `@${user.username} • ID: ${user.publicId}`;
+      info.append(title, subtitle);
+      if (user.statusMessage) {
+        const status = document.createElement('span');
+        status.className = 'search-status';
+        status.textContent = user.statusMessage;
+        info.append(status);
+      }
+      if (user.bio) {
+        const bio = document.createElement('span');
+        bio.className = 'member-bio';
+        bio.textContent = user.bio;
+        info.append(bio);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'search-result-actions';
+      const chatBtn = document.createElement('button');
+      chatBtn.type = 'button';
+      chatBtn.className = 'primary';
+      chatBtn.textContent = 'Написать';
+      chatBtn.addEventListener('click', () => startDirectChatFromSearch(user));
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'ghost tiny';
+      copyBtn.textContent = 'ID';
+      copyBtn.addEventListener('click', () => {
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(user.publicId).then(() => showToast('ID скопирован', 'success'));
+        } else {
+          showToast('Копирование недоступно', 'error');
+        }
+      });
+
+      actions.append(chatBtn, copyBtn);
+      item.append(avatar, info, actions);
+      fragment.append(item);
+    });
+    container.append(fragment);
+    container.classList.remove('hidden');
+  }
+
+  function handleSearchQuery(rawValue) {
+    const query = rawValue.trim();
+    state.searchQuery = query;
+    state.searchResults = [];
+    if (state.searchTimer) {
+      clearTimeout(state.searchTimer);
+      state.searchTimer = null;
+    }
+    if (query.length < 2) {
+      renderSearchResults();
+      return;
+    }
+    state.searchTimer = setTimeout(() => performUserSearch(query), 250);
+  }
+
+  async function performUserSearch(query) {
+    try {
+      const data = await apiRequest(`/api/users/search?q=${encodeURIComponent(query)}`);
+      if (state.searchQuery !== query) return;
+      state.searchResults = data.users || [];
+      renderSearchResults();
+    } catch (error) {
+      if (state.searchQuery === query) {
+        state.searchResults = [];
+        renderSearchResults();
+      }
+    }
+  }
+
+  function resetSearchInput() {
+    state.searchQuery = '';
+    state.searchResults = [];
+    state.filter = '';
+    if (elements.conversationFilter) {
+      elements.conversationFilter.value = '';
+    }
+    renderConversationList();
+    renderSearchResults();
+  }
+
+  async function startDirectChatFromSearch(user) {
+    try {
+      const data = await apiRequest('/api/conversations/direct', {
+        method: 'POST',
+        body: JSON.stringify({ username: user.publicId || user.username })
+      });
+      resetSearchInput();
+      closeModal(elements.directModal);
+      upsertConversations([data.conversation]);
+      openConversation(data.conversation.id);
+      showToast('Личный чат открыт', 'success');
+    } catch (error) {
+      showToast(error.message || 'Не удалось открыть чат', 'error');
+    }
+  }
+
   function formatTime(value) {
     if (!value) return '';
     return new Date(value).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -85,6 +231,55 @@
   function formatDate(value) {
     if (!value) return '';
     return new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function setAvatar(node, { url, color, text } = {}) {
+    if (!node) return;
+    if (url) {
+      node.classList.add('avatar--image');
+      node.style.backgroundImage = `url(${url})`;
+      node.style.backgroundColor = 'transparent';
+      node.style.background = 'transparent';
+      node.textContent = '';
+    } else {
+      node.classList.remove('avatar--image');
+      node.style.backgroundImage = '';
+      const bg = color || '#ff7aa2';
+      node.style.backgroundColor = bg;
+      node.style.background = bg;
+      node.textContent = text || '';
+    }
+  }
+
+  function updateProfileAvatarPreview() {
+    if (!elements.profileAvatarPreview) return;
+    const baseUser = state.user;
+    const hasUpload = Boolean(state.profileDraft.avatarAttachmentId && state.profileDraft.avatarUrl);
+    const hasExisting = Boolean(baseUser?.avatarUrl);
+    const removePlanned = state.profileDraft.removeAvatar;
+    const displayUrl = hasUpload ? state.profileDraft.avatarUrl : removePlanned ? null : baseUser?.avatarUrl;
+    const displayName = baseUser?.displayName || baseUser?.username || '';
+    setAvatar(elements.profileAvatarPreview, {
+      url: displayUrl,
+      color: baseUser?.avatarColor,
+      text: initials(displayName)
+    });
+    if (elements.profileAvatarRemoveBtn) {
+      elements.profileAvatarRemoveBtn.textContent = hasUpload || (removePlanned && hasExisting) ? 'Отменить' : 'Удалить фото';
+      elements.profileAvatarRemoveBtn.disabled = !hasUpload && !hasExisting;
+    }
+  }
+
+  function resetProfileDraft() {
+    state.profileDraft = {
+      avatarAttachmentId: null,
+      avatarUrl: state.user?.avatarUrl || null,
+      removeAvatar: false
+    };
+    if (elements.profileAvatarInput) {
+      elements.profileAvatarInput.value = '';
+    }
+    updateProfileAvatarPreview();
   }
 
   let toastTimer = null;
@@ -133,12 +328,31 @@
     state.hasMoreHistory.clear();
     state.pendingAttachments = [];
     state.currentConversationId = null;
+    state.searchResults = [];
+    state.searchQuery = '';
+    if (state.searchTimer) {
+      clearTimeout(state.searchTimer);
+      state.searchTimer = null;
+    }
+    state.profileDraft = {
+      avatarAttachmentId: null,
+      avatarUrl: null,
+      removeAvatar: false
+    };
     if (state.socket) {
       state.socket.disconnect();
       state.socket = null;
     }
     localStorage.removeItem('pink:token');
     localStorage.removeItem('pink:user');
+    if (elements.conversationFilter) {
+      elements.conversationFilter.value = '';
+    }
+    if (elements.searchResults) {
+      elements.searchResults.innerHTML = '';
+      elements.searchResults.classList.add('hidden');
+    }
+    updateProfileAvatarPreview();
     closeAllModals();
   }
 
@@ -149,9 +363,10 @@
   }
 
   async function apiRequest(path, options = {}) {
-    const headers = { ...API_DEFAULT_HEADERS, ...(options.headers || {}) };
+    const { skipAuthHandling = false, ...fetchOptions } = options;
+    const headers = { ...API_DEFAULT_HEADERS, ...(fetchOptions.headers || {}) };
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
-    const response = await fetch(path, { ...options, headers });
+    const response = await fetch(path, { ...fetchOptions, headers });
     let data;
     try {
       data = await response.json();
@@ -159,8 +374,10 @@
       data = {};
     }
     if (response.status === 401) {
-      handleUnauthorized();
-      throw new Error('Требуется авторизация');
+      if (!skipAuthHandling) {
+        handleUnauthorized();
+      }
+      throw new Error(data?.message || 'Требуется авторизация');
     }
     if (!response.ok) {
       throw new Error(data?.message || 'Произошла ошибка');
@@ -198,11 +415,25 @@
 
   function applyUser(user) {
     state.user = user;
-    elements.profileAvatar.textContent = initials(user.displayName || user.username);
-    elements.profileAvatar.style.background = user.avatarColor || '#ff7aa2';
-    elements.profileName.textContent = user.displayName || user.username;
+    const displayName = user.displayName || user.username;
+    setAvatar(elements.profileAvatar, {
+      url: user.avatarUrl,
+      color: user.avatarColor,
+      text: initials(displayName)
+    });
+    elements.profileName.textContent = displayName;
     elements.profileStatus.textContent = user.statusMessage || 'Без статуса';
+    if (elements.profileBio) {
+      if (user.bio) {
+        elements.profileBio.textContent = user.bio;
+        elements.profileBio.classList.remove('muted');
+      } else {
+        elements.profileBio.textContent = 'Добавьте о себе пару слов';
+        elements.profileBio.classList.add('muted');
+      }
+    }
     elements.profileCode.textContent = user.publicId || '—';
+    resetProfileDraft();
   }
 
   function serializeForm(form) {
@@ -216,7 +447,8 @@
       const payload = serializeForm(elements.loginForm);
       const data = await apiRequest('/api/login', {
         method: 'POST',
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        skipAuthHandling: true
       });
       state.token = data.token;
       applyUser(data.user);
@@ -234,7 +466,8 @@
       const payload = serializeForm(elements.registerForm);
       const data = await apiRequest('/api/register', {
         method: 'POST',
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        skipAuthHandling: true
       });
       state.token = data.token;
       applyUser(data.user);
@@ -281,6 +514,10 @@
     if (!state.user) return;
     elements.profileForm.displayName.value = state.user.displayName || state.user.username;
     elements.profileForm.statusMessage.value = state.user.statusMessage || '';
+    if (elements.profileForm.bio) {
+      elements.profileForm.bio.value = state.user.bio || '';
+    }
+    resetProfileDraft();
     openModal(elements.profileModal);
   });
 
@@ -288,9 +525,22 @@
     event.preventDefault();
     try {
       const payload = serializeForm(elements.profileForm);
+      const displayName = (payload.displayName || '').trim();
+      if (displayName.length < 2) {
+        showToast('Имя должно быть не короче 2 символов', 'error');
+        return;
+      }
+      const statusMessage = typeof payload.statusMessage === 'string' ? payload.statusMessage.trim() : '';
+      const bio = typeof payload.bio === 'string' ? payload.bio.trim() : '';
+      const body = { displayName, statusMessage, bio };
+      if (state.profileDraft.avatarAttachmentId) {
+        body.avatarAttachmentId = state.profileDraft.avatarAttachmentId;
+      } else if (state.profileDraft.removeAvatar && state.user?.avatarUrl) {
+        body.removeAvatar = true;
+      }
       const { user } = await apiRequest('/api/profile', {
         method: 'PUT',
-        body: JSON.stringify(payload)
+        body: JSON.stringify(body)
       });
       applyUser(user);
       saveSession();
@@ -300,6 +550,50 @@
       showToast(error.message || 'Не удалось обновить профиль', 'error');
     }
   });
+
+  if (elements.profileAvatarPreview && elements.profileAvatarInput) {
+    elements.profileAvatarPreview.setAttribute('title', 'Загрузить новое фото');
+    elements.profileAvatarPreview.addEventListener('click', () => {
+      elements.profileAvatarInput.click();
+    });
+
+    elements.profileAvatarInput.addEventListener('change', async (event) => {
+      const [file] = event.target.files || [];
+      if (!file) return;
+      try {
+        const attachment = await apiUpload(file);
+        state.profileDraft.avatarAttachmentId = attachment.id;
+        state.profileDraft.avatarUrl = attachment.url;
+        state.profileDraft.removeAvatar = false;
+        updateProfileAvatarPreview();
+        showToast('Фото загружено. Не забудьте сохранить профиль', 'success');
+      } catch (error) {
+        showToast(error.message || 'Не удалось загрузить фото', 'error');
+      } finally {
+        event.target.value = '';
+      }
+    });
+  }
+
+  if (elements.profileAvatarRemoveBtn) {
+    elements.profileAvatarRemoveBtn.addEventListener('click', () => {
+      if (state.profileDraft.avatarAttachmentId) {
+        state.profileDraft.avatarAttachmentId = null;
+        state.profileDraft.avatarUrl = null;
+        state.profileDraft.removeAvatar = false;
+        updateProfileAvatarPreview();
+        showToast('Предпросмотр удалён', 'info');
+        return;
+      }
+      if (!state.user?.avatarUrl) {
+        showToast('Фото пока нет', 'info');
+        return;
+      }
+      state.profileDraft.removeAvatar = !state.profileDraft.removeAvatar;
+      updateProfileAvatarPreview();
+      showToast(state.profileDraft.removeAvatar ? 'Фото будет удалено после сохранения' : 'Удаление отменено', 'info');
+    });
+  }
 
   elements.newGroupBtn.addEventListener('click', () => {
     elements.groupForm.reset();
@@ -382,8 +676,16 @@
   });
 
   elements.conversationFilter.addEventListener('input', (event) => {
-    state.filter = event.target.value.toLowerCase();
+    const value = event.target.value;
+    state.filter = value.toLowerCase();
     renderConversationList();
+    handleSearchQuery(value);
+  });
+
+  elements.conversationFilter.addEventListener('focus', () => {
+    if (state.searchQuery.length >= 2 && state.searchResults.length) {
+      renderSearchResults();
+    }
   });
 
   document.querySelectorAll('[data-copy]').forEach((btn) => {
@@ -426,6 +728,7 @@
     let subtitle = '';
     let avatarColor = '#ff82c3';
     let avatarText = initials(title);
+    let avatarUrl = conversation.avatarUrl || null;
 
     if (conversation.type === 'direct') {
       const other = members.find((member) => member.id !== state.user?.id);
@@ -434,6 +737,7 @@
         subtitle = buildPresence(other);
         avatarColor = other.avatarColor || avatarColor;
         avatarText = initials(title);
+        avatarUrl = other.avatarUrl || avatarUrl;
       }
     } else {
       subtitle = `${members.length} участников • код ${conversation.shareCode}`;
@@ -445,7 +749,7 @@
       subtitle = `${author}: ${fragment || '[вложение]'}`;
     }
 
-    return { title, subtitle, avatarColor, avatarText };
+    return { title, subtitle, avatarColor, avatarText, avatarUrl };
   }
 
   function buildPresence(member) {
@@ -475,8 +779,11 @@
 
       const avatar = document.createElement('div');
       avatar.className = 'avatar';
-      avatar.style.background = display.avatarColor;
-      avatar.textContent = display.avatarText;
+      setAvatar(avatar, {
+        url: display.avatarUrl,
+        color: display.avatarColor,
+        text: display.avatarText
+      });
 
       const meta = document.createElement('div');
       meta.className = 'conversation-meta';
@@ -553,10 +860,25 @@
       item.className = 'member-item';
       const avatar = document.createElement('div');
       avatar.className = 'avatar';
-      avatar.style.background = member.avatarColor || '#ffacd8';
-      avatar.textContent = initials(member.displayName || member.username);
+      setAvatar(avatar, {
+        url: member.avatarUrl,
+        color: member.avatarColor || '#ffacd8',
+        text: initials(member.displayName || member.username)
+      });
       const info = document.createElement('div');
-      info.innerHTML = `<strong>${member.displayName || member.username}</strong><br><small>${buildPresence(member)}</small>`;
+      info.className = 'member-info';
+      const name = document.createElement('strong');
+      name.textContent = member.displayName || member.username;
+      info.append(name);
+      if (member.bio) {
+        const bio = document.createElement('div');
+        bio.className = 'member-bio';
+        bio.textContent = member.bio;
+        info.append(bio);
+      }
+      const presence = document.createElement('small');
+      presence.textContent = buildPresence(member);
+      info.append(presence);
       item.append(avatar, info);
       fragment.append(item);
     });
@@ -567,8 +889,11 @@
     const conversation = state.conversations.get(conversationId);
     if (!conversation) return;
     const display = conversationDisplay(conversation);
-    elements.conversationAvatar.style.background = display.avatarColor;
-    elements.conversationAvatar.textContent = display.avatarText;
+    setAvatar(elements.conversationAvatar, {
+      url: display.avatarUrl,
+      color: display.avatarColor,
+      text: display.avatarText
+    });
     elements.conversationTitle.textContent = display.title;
     elements.conversationMeta.textContent = display.subtitle;
     elements.conversationCode.textContent = conversation.shareCode || '—';
@@ -594,8 +919,11 @@
 
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
-    avatar.style.background = message.user?.avatarColor || '#ff82c3';
-    avatar.textContent = initials(message.user?.displayName || message.user?.username);
+    setAvatar(avatar, {
+      url: message.user?.avatarUrl,
+      color: message.user?.avatarColor,
+      text: initials(message.user?.displayName || message.user?.username)
+    });
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';

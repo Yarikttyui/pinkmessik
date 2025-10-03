@@ -91,7 +91,7 @@ async function generateConversationCode() {
 
 async function findUserByUsername(username) {
   const [rows] = await pool.query(
-    'SELECT id, public_id, username, password_hash, display_name, avatar_color, status_message, last_seen FROM users WHERE username = ? LIMIT 1',
+    'SELECT id, public_id, username, password_hash, display_name, avatar_color, status_message, avatar_url, bio, last_seen FROM users WHERE username = ? LIMIT 1',
     [username]
   );
   return rows[0] || null;
@@ -99,7 +99,7 @@ async function findUserByUsername(username) {
 
 async function findUserByPublicId(publicId) {
   const [rows] = await pool.query(
-    'SELECT id, public_id, username, display_name, avatar_color, status_message, last_seen FROM users WHERE public_id = ? LIMIT 1',
+    'SELECT id, public_id, username, display_name, avatar_color, status_message, avatar_url, bio, last_seen FROM users WHERE public_id = ? LIMIT 1',
     [publicId]
   );
   return rows[0] || null;
@@ -107,7 +107,7 @@ async function findUserByPublicId(publicId) {
 
 async function findUserById(id) {
   const [rows] = await pool.query(
-    'SELECT id, public_id, username, display_name, avatar_color, status_message, last_seen FROM users WHERE id = ? LIMIT 1',
+    'SELECT id, public_id, username, display_name, avatar_color, status_message, avatar_url, bio, last_seen FROM users WHERE id = ? LIMIT 1',
     [id]
   );
   return rows[0] || null;
@@ -121,7 +121,9 @@ function mapUser(row) {
     username: row.username,
     displayName: row.display_name,
     avatarColor: row.avatar_color,
+    avatarUrl: row.avatar_url || null,
     statusMessage: row.status_message,
+    bio: row.bio,
     lastSeen: row.last_seen
   };
 }
@@ -163,7 +165,8 @@ function mapMessage(row, currentUserId) {
       publicId: row.public_id,
       username: row.username,
       displayName: row.display_name,
-      avatarColor: row.avatar_color
+      avatarColor: row.avatar_color,
+      avatarUrl: row.avatar_url
     },
     content: row.deleted_at ? null : row.content,
     attachments,
@@ -182,7 +185,7 @@ function mapMessage(row, currentUserId) {
 
 async function fetchConversationMembers(conversationId) {
   const [rows] = await pool.query(
-    `SELECT cm.user_id, cm.role, u.public_id, u.username, u.display_name, u.avatar_color, u.status_message, u.last_seen
+    `SELECT cm.user_id, cm.role, u.public_id, u.username, u.display_name, u.avatar_color, u.avatar_url, u.status_message, u.bio, u.last_seen
      FROM conversation_members cm
      JOIN users u ON u.id = cm.user_id
      WHERE cm.conversation_id = ?
@@ -195,7 +198,9 @@ async function fetchConversationMembers(conversationId) {
     username: row.username,
     displayName: row.display_name,
     avatarColor: row.avatar_color,
+    avatarUrl: row.avatar_url,
     statusMessage: row.status_message,
+    bio: row.bio,
     role: row.role,
     lastSeen: row.last_seen
   }));
@@ -204,7 +209,7 @@ async function fetchConversationMembers(conversationId) {
 async function fetchConversationList(userId) {
   const [rows] = await pool.query(
     `SELECT c.*, json_object('id', m.id, 'content', m.content, 'createdAt', m.created_at,
-            'user', json_object('id', u.id, 'publicId', u.public_id, 'displayName', u.display_name, 'username', u.username)) AS last_message,
+      'user', json_object('id', u.id, 'publicId', u.public_id, 'displayName', u.display_name, 'username', u.username, 'avatarUrl', u.avatar_url, 'avatarColor', u.avatar_color)) AS last_message,
             IFNULL(uc.unread_count, 0) AS unread_count
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id = c.id
@@ -217,7 +222,7 @@ async function fetchConversationList(userId) {
          GROUP BY conversation_id
        ) lm ON lm.conversation_id = m1.conversation_id AND lm.created_at = m1.created_at
      ) m ON m.conversation_id = c.id
-     LEFT JOIN users u ON u.id = m.user_id
+  LEFT JOIN users u ON u.id = m.user_id
      LEFT JOIN (
        SELECT m.conversation_id,
               SUM(CASE WHEN cm.last_read_at IS NULL OR m.created_at > cm.last_read_at THEN 1 ELSE 0 END) AS unread_count
@@ -248,7 +253,7 @@ async function ensureMembership(conversationId, userId) {
 
 async function fetchMessageById(messageId, currentUserId) {
   const [rows] = await pool.query(
-    `SELECT m.*, u.public_id, u.username, u.display_name, u.avatar_color,
+    `SELECT m.*, u.public_id, u.username, u.display_name, u.avatar_color, u.avatar_url,
             (
               SELECT JSON_ARRAYAGG(JSON_OBJECT('emoji', emoji, 'userIds', user_ids, 'count', cnt))
               FROM (
@@ -282,7 +287,7 @@ async function fetchMessages(conversationId, currentUserId, options = {}) {
   params.push(limit);
 
   const [rows] = await pool.query(
-    `SELECT m.*, u.public_id, u.username, u.display_name, u.avatar_color,
+    `SELECT m.*, u.public_id, u.username, u.display_name, u.avatar_color, u.avatar_url,
             (
               SELECT JSON_ARRAYAGG(JSON_OBJECT('emoji', emoji, 'userIds', user_ids, 'count', cnt))
               FROM (
@@ -443,6 +448,9 @@ app.put(
   authGuard,
   body('displayName').optional().isLength({ min: 2, max: 60 }),
   body('statusMessage').optional().isLength({ max: 160 }),
+  body('bio').optional().isLength({ max: 500 }),
+  body('avatarAttachmentId').optional().isUUID(),
+  body('removeAvatar').optional().isBoolean().toBoolean(),
   validationProblem,
   async (req, res) => {
     try {
@@ -455,6 +463,30 @@ app.put(
       if (typeof req.body.statusMessage === 'string') {
         updates.push('status_message = ?');
         params.push(req.body.statusMessage.trim());
+      }
+      if (typeof req.body.bio === 'string') {
+        updates.push('bio = ?');
+        params.push(req.body.bio.trim());
+      }
+
+      const attachmentId = typeof req.body.avatarAttachmentId === 'string' ? req.body.avatarAttachmentId.trim() : '';
+      let avatarApplied = false;
+      if (attachmentId) {
+        const [files] = await pool.query(
+          'SELECT stored_name FROM attachments WHERE id = ? AND user_id = ? LIMIT 1',
+          [attachmentId, req.auth.id]
+        );
+        if (!files.length) {
+          return res.status(400).json({ message: 'Файл для аватара не найден' });
+        }
+        updates.push('avatar_url = ?');
+        params.push(`/uploads/${files[0].stored_name}`);
+        avatarApplied = true;
+      }
+
+      const removeAvatar = req.body.removeAvatar === true;
+      if (!avatarApplied && removeAvatar) {
+        updates.push('avatar_url = NULL');
       }
       if (!updates.length) {
         const user = await findUserById(req.auth.id);
@@ -478,15 +510,17 @@ app.get(
   query('q').isLength({ min: 1 }).withMessage('Введите хотя бы один символ'),
   validationProblem,
   async (req, res) => {
-    const q = `%${req.query.q.trim()}%`;
+    const term = String(req.query.q || '').trim();
+    const like = `%${term}%`;
+    const likeUpper = `%${term.toUpperCase()}%`;
     const [rows] = await pool.query(
-      `SELECT id, public_id, username, display_name, avatar_color, status_message
+      `SELECT id, public_id, username, display_name, avatar_color, avatar_url, status_message, bio
        FROM users
-       WHERE (username LIKE ? OR display_name LIKE ?)
+       WHERE (username LIKE ? OR display_name LIKE ? OR UPPER(public_id) LIKE ? OR UPPER(public_id) = ?)
          AND id != ?
        ORDER BY display_name ASC
        LIMIT 30`,
-      [q, q, req.auth.id]
+      [like, like, likeUpper, term.toUpperCase(), req.auth.id]
     );
     return res.json({ users: rows.map(mapUser) });
   }

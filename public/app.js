@@ -582,6 +582,20 @@
     return data;
   }
 
+  async function updateProfileField(field, value) {
+    if (!state.user) {
+      throw new Error('Сначала войдите в систему');
+    }
+    const body = { [field]: value };
+    const { user } = await apiRequest('/api/profile', {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    });
+    applyUser(user);
+    saveSession();
+    return user;
+  }
+
   function tryParseJson(raw) {
     if (!raw) return null;
     if (typeof raw === 'object') return raw;
@@ -644,7 +658,9 @@
       text: initials(displayName)
     });
     elements.profileName.textContent = displayName;
-    elements.profileStatus.textContent = user.statusMessage || 'Без статуса';
+    const statusMessage = user.statusMessage || '';
+    elements.profileStatus.textContent = statusMessage || 'Без статуса';
+    elements.profileStatus.classList.toggle('muted', !statusMessage);
     if (elements.profileBio) {
       if (user.bio) {
         elements.profileBio.textContent = user.bio;
@@ -656,6 +672,173 @@
     }
     elements.profileCode.textContent = user.publicId || '—';
     resetProfileDraft();
+  }
+
+  function placeCaretAtEnd(node) {
+    if (!node) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function setupInlineProfileEditor(node, options = {}) {
+    if (!node) return;
+    const {
+      field,
+      multiline = false,
+      placeholder = '',
+      emptyLabel = '',
+      maxLength = 160,
+      successMessage = 'Профиль обновлён'
+    } = options;
+    if (!field) return;
+    node.classList.add('inline-editable');
+    node.setAttribute('tabindex', '0');
+    node.setAttribute('role', 'textbox');
+    node.dataset.placeholder = placeholder || emptyLabel || '';
+    if (!node.getAttribute('title')) {
+      node.setAttribute('title', 'Нажмите, чтобы отредактировать');
+    }
+
+    const normalizeValue = (text) => {
+      if (!text) return '';
+      let value = String(text).replace(/\u00a0/g, ' ');
+      if (multiline) {
+        value = value.replace(/\r\n/g, '\n');
+        value = value
+          .split('\n')
+          .map((line) => line.replace(/\s+$/g, ''))
+          .join('\n');
+        value = value.replace(/\n{3,}/g, '\n\n').trim();
+      } else {
+        value = value.replace(/\s+/g, ' ').trim();
+      }
+      if (value.length > maxLength) {
+        value = value.slice(0, maxLength);
+      }
+      return value;
+    };
+
+    const activateEditor = () => {
+      if (!state.user || node.dataset.editing === 'true') return;
+      const originalRaw = state.user?.[field] ?? '';
+      const originalNormalized = normalizeValue(originalRaw);
+
+      const applyDisplay = (value) => {
+        const cleaned = normalizeValue(value);
+        if (!cleaned) {
+          node.textContent = emptyLabel || placeholder || '';
+          node.classList.add('muted');
+        } else {
+          node.textContent = cleaned;
+          node.classList.remove('muted');
+        }
+      };
+
+      const removeEditingState = () => {
+        node.removeEventListener('input', handleInput);
+        node.removeEventListener('keydown', handleKeyDown);
+        node.removeEventListener('blur', handleBlur);
+        node.contentEditable = 'false';
+        node.classList.remove('editing');
+        node.dataset.editing = 'false';
+      };
+
+      const enforceLimit = () => {
+        const text = multiline ? node.innerText : node.textContent;
+        if (text.length > maxLength) {
+          const trimmed = text.slice(0, maxLength);
+          if (multiline) {
+            node.innerText = trimmed;
+          } else {
+            node.textContent = trimmed;
+          }
+          placeCaretAtEnd(node);
+        }
+      };
+
+      const handleInput = () => {
+        enforceLimit();
+      };
+
+      const cancelEditing = () => {
+        removeEditingState();
+        applyDisplay(originalRaw);
+        node.blur();
+      };
+
+      const handleKeyDown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cancelEditing();
+          return;
+        }
+        if (!multiline && event.key === 'Enter') {
+          event.preventDefault();
+          node.blur();
+          return;
+        }
+        if (multiline && event.key === 'Enter' && event.ctrlKey) {
+          event.preventDefault();
+          node.blur();
+        }
+      };
+
+      const handleBlur = async () => {
+        const raw = multiline ? node.innerText : node.textContent;
+        const value = normalizeValue(raw);
+        removeEditingState();
+        applyDisplay(value);
+        if (value === originalNormalized) {
+          return;
+        }
+        node.classList.add('inline-saving');
+        try {
+          await updateProfileField(field, value);
+          node.classList.remove('inline-saving');
+          if (successMessage) {
+            showToast(successMessage, 'success');
+          }
+        } catch (error) {
+          node.classList.remove('inline-saving');
+          showToast(error.message || 'Не удалось обновить профиль', 'error');
+          applyDisplay(originalRaw);
+        }
+      };
+
+      node.dataset.editing = 'true';
+      node.classList.remove('muted');
+      node.classList.add('editing');
+      node.contentEditable = 'true';
+      if (multiline) {
+        node.innerText = originalRaw || '';
+      } else {
+        node.textContent = originalRaw || '';
+      }
+      node.focus();
+      placeCaretAtEnd(node);
+
+      node.addEventListener('input', handleInput);
+      node.addEventListener('keydown', handleKeyDown);
+      node.addEventListener('blur', handleBlur);
+    };
+
+    node.addEventListener('click', (event) => {
+      event.preventDefault();
+      activateEditor();
+    });
+
+    node.addEventListener('keydown', (event) => {
+      if (node.dataset.editing === 'true') return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        activateEditor();
+      }
+    });
   }
 
   function serializeForm(form) {
@@ -793,6 +976,23 @@
     } catch (error) {
       showToast(error.message || 'Не удалось обновить профиль', 'error');
     }
+  });
+
+  setupInlineProfileEditor(elements.profileStatus, {
+    field: 'statusMessage',
+    placeholder: 'Расскажите, чем занимаетесь',
+    emptyLabel: 'Без статуса',
+    maxLength: 160,
+    successMessage: 'Статус обновлён'
+  });
+
+  setupInlineProfileEditor(elements.profileBio, {
+    field: 'bio',
+    multiline: true,
+    placeholder: 'Добавьте пару слов о себе',
+    emptyLabel: 'Добавьте о себе пару слов',
+    maxLength: 500,
+    successMessage: 'Описание обновлено'
   });
 
   if (elements.profileAvatarPreview && elements.profileAvatarInput) {

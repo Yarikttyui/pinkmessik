@@ -38,6 +38,12 @@
     messageInput: document.getElementById('messageInput'),
     attachmentInput: document.getElementById('attachmentInput'),
     attachmentBar: document.getElementById('attachmentBar'),
+  voiceRecordBtn: document.getElementById('voiceRecordBtn'),
+  circleRecordBtn: document.getElementById('circleRecordBtn'),
+  recordingIndicator: document.getElementById('recordingIndicator'),
+  recordingStatus: document.getElementById('recordingStatus'),
+  recordingType: document.getElementById('recordingType'),
+  recordingStopBtn: document.getElementById('recordingStopBtn'),
     profileModal: document.getElementById('profileModal'),
     profileForm: document.getElementById('profileForm'),
   profileAvatarPreview: document.getElementById('profileAvatarPreview'),
@@ -56,6 +62,7 @@
     token: localStorage.getItem('pink:token') || null,
     user: null,
     socket: null,
+  socketErrorShown: false,
     conversations: new Map(),
     conversationOrder: [],
     membersCache: new Map(),
@@ -72,6 +79,8 @@
     searchQuery: '',
     searchTimer: null,
     readTimer: null,
+    recording: null,
+    recordingTimer: null,
     profileDraft: {
       avatarAttachmentId: null,
       avatarUrl: null,
@@ -352,6 +361,7 @@
     if (state.socket) {
       state.socket.disconnect();
       state.socket = null;
+    state.socketErrorShown = false;
     }
     localStorage.removeItem('pink:token');
     localStorage.removeItem('pink:user');
@@ -1131,6 +1141,32 @@
     }
   });
 
+  if (elements.voiceRecordBtn) {
+    elements.voiceRecordBtn.addEventListener('click', async () => {
+      if (state.recording?.type === 'voice') {
+        await stopRecording();
+      } else {
+        await startRecording('voice');
+      }
+    });
+  }
+
+  if (elements.circleRecordBtn) {
+    elements.circleRecordBtn.addEventListener('click', async () => {
+      if (state.recording?.type === 'circle') {
+        await stopRecording();
+      } else {
+        await startRecording('circle');
+      }
+    });
+  }
+
+  if (elements.recordingStopBtn) {
+    elements.recordingStopBtn.addEventListener('click', () => {
+      stopRecording();
+    });
+  }
+
   function renderAttachmentBar() {
     if (!state.pendingAttachments.length) {
       elements.attachmentBar.classList.add('hidden');
@@ -1153,6 +1189,175 @@
       chip.append(remove);
       elements.attachmentBar.append(chip);
     });
+  }
+
+  function setRecordingButtonState(activeType) {
+    if (elements.voiceRecordBtn) {
+      elements.voiceRecordBtn.classList.toggle('active', activeType === 'voice');
+    }
+    if (elements.circleRecordBtn) {
+      elements.circleRecordBtn.classList.toggle('active', activeType === 'circle');
+    }
+  }
+
+  function formatDuration(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+  }
+
+  function updateRecordingIndicator() {
+    if (!elements.recordingIndicator) return;
+    const recording = state.recording;
+    if (!recording) {
+      elements.recordingIndicator.classList.add('hidden');
+      if (elements.recordingStatus) elements.recordingStatus.textContent = '00:00';
+      if (elements.recordingType) elements.recordingType.textContent = '';
+      return;
+    }
+    elements.recordingIndicator.classList.remove('hidden');
+    if (elements.recordingStatus) {
+      const elapsed = Date.now() - recording.startedAt;
+      elements.recordingStatus.textContent = formatDuration(elapsed);
+    }
+    if (elements.recordingType) {
+      elements.recordingType.textContent = recording.type === 'voice' ? 'Голос' : 'Кружок';
+    }
+  }
+
+  function getRecorderMimeType(type) {
+    if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
+    const candidates = type === 'voice'
+      ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm']
+      : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+    return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) || null;
+  }
+
+  async function startRecording(type) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast('Браузер не поддерживает запись', 'error');
+      return;
+    }
+    if (state.recording) {
+      await stopRecording({ cancel: true });
+    }
+    try {
+      const constraints = type === 'voice'
+        ? { audio: true }
+        : { audio: true, video: { facingMode: 'user' } };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const mimeType = getRecorderMimeType(type);
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const chunks = [];
+      const recording = {
+        type,
+        recorder,
+        stream,
+        chunks,
+        startedAt: Date.now(),
+        canceled: false,
+        resolve: null,
+        timeoutId: null
+      };
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      recorder.onstop = () => finalizeRecording(recording);
+      recorder.start();
+      state.recording = recording;
+      setRecordingButtonState(type);
+      updateRecordingIndicator();
+      if (state.recordingTimer) clearInterval(state.recordingTimer);
+      state.recordingTimer = setInterval(updateRecordingIndicator, 200);
+      const maxDuration = type === 'voice' ? 120000 : 20000;
+      recording.timeoutId = setTimeout(() => {
+        stopRecording();
+        showToast('Время записи истекло', 'info');
+      }, maxDuration);
+      showToast(type === 'voice' ? 'Запись голосового...' : 'Запись кружка...', 'info');
+    } catch (error) {
+      console.error('Запуск записи не удался', error);
+      showToast('Нужно разрешить доступ к микрофону/камере', 'error');
+      setRecordingButtonState(null);
+      state.recording = null;
+      updateRecordingIndicator();
+    }
+  }
+
+  function stopRecording({ cancel = false } = {}) {
+    return new Promise((resolve) => {
+      const recording = state.recording;
+      if (!recording) {
+        resolve();
+        return;
+      }
+      recording.canceled = cancel;
+      recording.resolve = resolve;
+      if (state.recordingTimer) {
+        clearInterval(state.recordingTimer);
+        state.recordingTimer = null;
+      }
+      if (recording.timeoutId) {
+        clearTimeout(recording.timeoutId);
+        recording.timeoutId = null;
+      }
+      if (recording.recorder.state !== 'inactive') {
+        recording.recorder.stop();
+      } else {
+        finalizeRecording(recording);
+      }
+    });
+  }
+
+  async function finalizeRecording(recording) {
+    try {
+      recording.stream?.getTracks().forEach((track) => track.stop());
+    } catch (error) {
+      console.warn('Не удалось остановить дорожку медиа', error);
+    }
+    setRecordingButtonState(null);
+    if (state.recording === recording) {
+      state.recording = null;
+    }
+    updateRecordingIndicator();
+
+    if (recording.canceled) {
+      recording.resolve?.();
+      return;
+    }
+
+    const mimeType = recording.recorder.mimeType || (recording.type === 'voice' ? 'audio/webm' : 'video/webm');
+    const blob = new Blob(recording.chunks, { type: mimeType });
+    if (!blob.size) {
+      showToast('Запись пуста', 'error');
+      recording.resolve?.();
+      return;
+    }
+
+    const fileName = recording.type === 'voice'
+      ? `voice-${Date.now()}.webm`
+      : `circle-${Date.now()}.webm`;
+    const file = new File([blob], fileName, { type: blob.type || mimeType });
+    const durationMs = Math.max(0, Date.now() - recording.startedAt);
+    const uploadOptions = { fileType: recording.type, durationMs };
+    if (recording.type === 'circle') {
+      uploadOptions.circle = true;
+    }
+
+    try {
+      const attachment = await apiUpload(file, uploadOptions);
+      state.pendingAttachments.push(attachment);
+      renderAttachmentBar();
+      showToast(recording.type === 'voice' ? 'Голосовое готово' : 'Кружок готов', 'success');
+    } catch (error) {
+      console.error('Не удалось загрузить запись', error);
+      showToast(error.message || 'Не удалось сохранить запись', 'error');
+    }
+
+    recording.resolve?.();
   }
 
   function detectAttachmentKind(attachment) {
@@ -1375,6 +1580,9 @@
     const current = state.conversations.get(conversationId);
     if (current && current.unreadCount) {
       state.conversations.set(conversationId, { ...current, unreadCount: 0 });
+    if (state.recording) {
+      stopRecording({ cancel: true });
+    }
       renderConversationList();
     }
     elements.chatPlaceholder.classList.add('hidden');

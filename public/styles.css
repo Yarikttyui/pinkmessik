@@ -631,6 +631,12 @@ textarea:focus {
   align-items: end;
 }
 
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .composer-row textarea {
   min-height: 46px;
   max-height: 180px;
@@ -646,6 +652,64 @@ textarea:focus {
   justify-content: center;
   font-size: 18px;
   color: var(--pink-600);
+}
+
+.record-btn {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  border: 1px dashed rgba(247, 37, 133, 0.4);
+  background: rgba(247, 37, 133, 0.08);
+  color: var(--pink-600);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.2s;
+}
+
+.record-btn:hover {
+  background: rgba(247, 37, 133, 0.15);
+  transform: translateY(-1px);
+}
+
+.record-btn.active {
+  background: linear-gradient(135deg, var(--pink-400), var(--pink-600));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(247, 37, 133, 0.25);
+}
+
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  background: rgba(247, 37, 133, 0.12);
+  border-radius: 14px;
+  padding: 10px 14px;
+  color: var(--pink-600);
+  font-weight: 600;
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  background: var(--pink-600);
+  border-radius: 50%;
+  animation: pulse 1s infinite;
+}
+
+.recording-type {
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: rgba(53, 36, 63, 0.65);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
 }
 
 .details-panel {

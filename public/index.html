@@ -111,12 +111,22 @@
         <form class="composer" id="messageForm" autocomplete="off">
           <div class="attachment-bar hidden" id="attachmentBar"></div>
           <div class="composer-row">
-            <label class="attachment-btn" title="Прикрепить файл">
-              <input type="file" id="attachmentInput" accept="image/*,audio/*,video/*" hidden>
-              📎
-            </label>
+            <div class="composer-actions">
+              <label class="attachment-btn" title="Прикрепить файл">
+                <input type="file" id="attachmentInput" accept="image/*,audio/*,video/*" hidden>
+                📎
+              </label>
+              <button type="button" class="record-btn" id="voiceRecordBtn" title="Голосовое сообщение">🎤</button>
+              <button type="button" class="record-btn" id="circleRecordBtn" title="Кружок (видео)">📹</button>
+            </div>
             <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Напишите сообщение..."></textarea>
             <button type="submit" class="primary">Отправить</button>
+          </div>
+          <div class="recording-indicator hidden" id="recordingIndicator">
+            <span class="recording-dot"></span>
+            <span id="recordingStatus">00:00</span>
+            <span id="recordingType" class="recording-type"></span>
+            <button type="button" class="ghost tiny" id="recordingStopBtn">Стоп</button>
           </div>
         </form>
       </section>

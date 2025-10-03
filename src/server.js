@@ -418,7 +418,7 @@ async function emitConversationUpdate(conversationId, userIds = null) {
 
 async function markConversationRead(conversationId, userId) {
   await pool.query(
-    'UPDATE conversation_members SET last_read_at = GREATEST(COALESCE(last_read_at, 0), CURRENT_TIMESTAMP) WHERE conversation_id = ? AND user_id = ?',
+    'UPDATE conversation_members SET last_read_at = CURRENT_TIMESTAMP WHERE conversation_id = ? AND user_id = ?',
     [conversationId, userId]
   );
 }

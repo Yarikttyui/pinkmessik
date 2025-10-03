@@ -1296,7 +1296,7 @@
     if (!state.token) return;
     const socket = io({
       auth: { token: state.token },
-      transports: ['websocket', 'polling']
+      transports: ['polling', 'websocket']
     });
 
     socket.on('connect_error', (err) => {

@@ -86,6 +86,7 @@ async function initDb() {
       role ENUM('owner','admin','member') NOT NULL DEFAULT 'member',
       joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       last_read_at DATETIME NULL,
+      notifications_enabled TINYINT(1) NOT NULL DEFAULT 1,
       PRIMARY KEY (conversation_id, user_id),
       FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -124,6 +125,17 @@ async function initDb() {
       PRIMARY KEY (message_id, user_id, emoji),
       FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS message_favorites (
+      user_id INT NOT NULL,
+      message_id BIGINT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, message_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -202,6 +214,7 @@ async function ensureColumns() {
   await ensureColumn(db, 'attachments', 'is_circle', "ALTER TABLE attachments ADD COLUMN is_circle TINYINT(1) NOT NULL DEFAULT 0 AFTER waveform");
   await ensureColumn(db, 'conversations', 'avatar_attachment_id', "ALTER TABLE conversations ADD COLUMN avatar_attachment_id CHAR(36) NULL AFTER description");
   await ensureColumn(db, 'conversations', 'avatar_url', "ALTER TABLE conversations ADD COLUMN avatar_url VARCHAR(255) NULL AFTER avatar_attachment_id");
+  await ensureColumn(db, 'conversation_members', 'notifications_enabled', "ALTER TABLE conversation_members ADD COLUMN notifications_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER last_read_at");
   await ensureColumn(db, 'messages', 'reply_snapshot', "ALTER TABLE messages ADD COLUMN reply_snapshot JSON NULL AFTER parent_id");
   await ensureColumn(db, 'messages', 'forwarded_from_message_id', "ALTER TABLE messages ADD COLUMN forwarded_from_message_id BIGINT NULL AFTER reply_snapshot");
   await ensureColumn(db, 'messages', 'forward_metadata', "ALTER TABLE messages ADD COLUMN forward_metadata JSON NULL AFTER forwarded_from_message_id");

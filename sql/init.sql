@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   role ENUM('owner','admin','member') NOT NULL DEFAULT 'member',
   joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   last_read_at DATETIME NULL,
+  notifications_enabled TINYINT(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (conversation_id, user_id),
   FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -103,6 +104,15 @@ CREATE TABLE IF NOT EXISTS message_reactions (
   PRIMARY KEY (message_id, user_id, emoji),
   FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS message_favorites (
+  user_id INT NOT NULL,
+  message_id BIGINT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, message_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS attachments (

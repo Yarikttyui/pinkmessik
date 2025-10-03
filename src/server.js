@@ -133,7 +133,14 @@ async function ensureDirectConversationBetween(currentUserId, targetUser) {
 
   const conversation = await fetchConversationById(conversationId);
   const membersList = await fetchConversationMembers(conversationId);
-  const payload = { ...mapConversation(conversation), members: membersList };
+  const payloadFor = (userId) => {
+    const member = membersList.find((m) => m.id === userId);
+    return buildConversationPayload(conversation, membersList, {
+      role: member?.role || (userId === currentUserId ? 'owner' : 'member'),
+      notifications_enabled: 1
+    });
+  };
+  const payload = payloadFor(currentUserId);
 
   joinUserToConversationSockets(currentUserId, conversationId);
   joinUserToConversationSockets(targetUser.id, conversationId);
@@ -141,7 +148,7 @@ async function ensureDirectConversationBetween(currentUserId, targetUser) {
   if (created) {
     await emitConversationUpdate(conversationId, [currentUserId, targetUser.id]);
     emitToUser(currentUserId, 'conversation:created', { conversation: payload });
-    emitToUser(targetUser.id, 'conversation:created', { conversation: payload });
+    emitToUser(targetUser.id, 'conversation:created', { conversation: payloadFor(targetUser.id) });
   }
 
   return { conversationId, created, payload };
@@ -190,6 +197,8 @@ function mapConversation(row) {
   const lastMessage = safeJsonParse(row.last_message);
   const avatarStoredName = row.avatar_stored_name || row.avatarStoredName;
   const avatarUrl = row.avatar_url || (avatarStoredName ? `/uploads/${avatarStoredName}` : null);
+  const membershipRole = row.membership_role || row.member_role || row.role || null;
+  const notificationsRaw = row.notifications_enabled;
   return {
     id: row.id,
     shareCode: row.share_code,
@@ -203,7 +212,23 @@ function mapConversation(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastMessage,
-    unreadCount: row.unread_count ? Number(row.unread_count) : 0
+    unreadCount: row.unread_count ? Number(row.unread_count) : 0,
+    membershipRole,
+    notificationsEnabled:
+      notificationsRaw === undefined || notificationsRaw === null ? true : Boolean(notificationsRaw)
+  };
+}
+
+function buildConversationPayload(conversationRow, members, membership) {
+  const mapped = mapConversation(conversationRow);
+  return {
+    ...mapped,
+    members,
+    membershipRole: membership?.role || mapped.membershipRole || null,
+    notificationsEnabled:
+      membership?.notifications_enabled === undefined
+        ? mapped.notificationsEnabled
+        : Boolean(membership.notifications_enabled)
   };
 }
 function mapAttachment(row) {
@@ -290,6 +315,7 @@ function mapMessage(row, currentUserId) {
       count: reaction.count,
       reacted: reaction.userIds.includes(currentUserId)
     })),
+    isFavorite: Boolean(row.is_favorite),
     pinnedAt: row.pinned_at || null,
     pinnedBy:
       row.pinned_by
@@ -349,7 +375,9 @@ async function fetchConversationList(userId) {
     `SELECT c.*, ca.stored_name AS avatar_stored_name, ca.file_name AS avatar_file_name, ca.mime_type AS avatar_mime_type,
             json_object('id', m.id, 'content', m.content, 'createdAt', m.created_at,
       'user', json_object('id', u.id, 'publicId', u.public_id, 'displayName', u.display_name, 'username', u.username, 'avatarUrl', u.avatar_url, 'avatarColor', u.avatar_color)) AS last_message,
-            IFNULL(uc.unread_count, 0) AS unread_count
+            IFNULL(uc.unread_count, 0) AS unread_count,
+            cm.role AS membership_role,
+            cm.notifications_enabled
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id = c.id
      LEFT JOIN attachments ca ON ca.id = c.avatar_attachment_id
@@ -392,7 +420,7 @@ async function fetchConversationById(conversationId) {
 
 async function ensureMembership(conversationId, userId) {
   const [rows] = await pool.query(
-    'SELECT role FROM conversation_members WHERE conversation_id = ? AND user_id = ? LIMIT 1',
+    'SELECT role, notifications_enabled FROM conversation_members WHERE conversation_id = ? AND user_id = ? LIMIT 1',
     [conversationId, userId]
   );
   return rows[0] || null;
@@ -411,12 +439,16 @@ async function fetchMessageById(messageId, currentUserId) {
                 WHERE message_id = m.id
                 GROUP BY emoji
               ) r
-            ) AS reactions
+            ) AS reactions,
+            EXISTS(
+              SELECT 1 FROM message_favorites mf
+              WHERE mf.message_id = m.id AND mf.user_id = ?
+            ) AS is_favorite
      FROM messages m
      JOIN users u ON u.id = m.user_id
      WHERE m.id = ?
      LIMIT 1`,
-    [messageId]
+    [currentUserId, messageId]
   );
   return rows[0] ? mapMessage(rows[0], currentUserId) : null;
 }
@@ -424,7 +456,7 @@ async function fetchMessageById(messageId, currentUserId) {
 async function fetchMessages(conversationId, currentUserId, options = {}) {
   const limit = Math.min(Number(options.limit) || 30, 200);
   const beforeId = options.before ? Number(options.before) : null;
-  const params = [conversationId];
+  const params = [currentUserId, conversationId];
   let condition = '';
   if (beforeId) {
     condition = 'AND m.id < ?';
@@ -443,7 +475,11 @@ async function fetchMessages(conversationId, currentUserId, options = {}) {
                 WHERE message_id = m.id
                 GROUP BY emoji
               ) r
-            ) AS reactions
+            ) AS reactions,
+            EXISTS(
+              SELECT 1 FROM message_favorites mf
+              WHERE mf.message_id = m.id AND mf.user_id = ?
+            ) AS is_favorite
      FROM messages m
      JOIN users u ON u.id = m.user_id
      WHERE m.conversation_id = ? ${condition}
@@ -466,6 +502,10 @@ async function fetchPinnedMessages(conversationId, currentUserId) {
                 GROUP BY emoji
               ) r
             ) AS reactions,
+            EXISTS(
+              SELECT 1 FROM message_favorites mf
+              WHERE mf.message_id = m.id AND mf.user_id = ?
+            ) AS is_favorite,
             cp.pinned_at, cp.pinned_by,
             pu.display_name AS pinned_by_display_name,
             pu.username AS pinned_by_username,
@@ -477,9 +517,24 @@ async function fetchPinnedMessages(conversationId, currentUserId) {
      WHERE cp.conversation_id = ?
      ORDER BY cp.pinned_at DESC
      LIMIT 20`,
-    [conversationId]
+    [currentUserId, conversationId]
   );
   return rows.map((row) => mapMessage(row, currentUserId));
+}
+
+async function fetchFavoriteMessages(userId) {
+  const [rows] = await pool.query(
+    `SELECT mf.message_id
+     FROM message_favorites mf
+     JOIN messages m ON m.id = mf.message_id
+     WHERE mf.user_id = ? AND m.user_id = ?
+     ORDER BY mf.created_at DESC
+     LIMIT 200`,
+    [userId, userId]
+  );
+  if (!rows.length) return [];
+  const messages = await Promise.all(rows.map((row) => fetchMessageById(row.message_id, userId)));
+  return messages.filter(Boolean);
 }
 
 async function broadcastPinnedMessages(conversationId) {
@@ -563,6 +618,48 @@ function leaveUserFromConversationSockets(userId, conversationId) {
     socket.leave(`conversation:${conversationId}`);
     socket.data.conversations?.delete(conversationId);
   });
+}
+
+function leaveCall(conversationId, socket) {
+  const callState = activeCalls.get(conversationId);
+  const userId = socket.data.user?.id;
+  if (!callState || !userId) return;
+  const entry = callState.get(userId);
+  socket.leave(`call:${conversationId}`);
+  socket.data.activeCalls?.delete(conversationId);
+  if (!entry) {
+    if (!callState.size) {
+      activeCalls.delete(conversationId);
+    }
+    return;
+  }
+  entry.sockets.delete(socket.id);
+  if (!entry.sockets.size) {
+    callState.delete(userId);
+    socket.to(`call:${conversationId}`).emit('call:user-left', { conversationId, userId });
+  }
+  if (!callState.size) {
+    activeCalls.delete(conversationId);
+  }
+}
+
+function forceLeaveCall(conversationId, userId) {
+  const callState = activeCalls.get(conversationId);
+  if (!callState) return;
+  const entry = callState.get(userId);
+  if (!entry) return;
+  entry.sockets.forEach((socketId) => {
+    const targetSocket = io.sockets.sockets.get(socketId);
+    if (targetSocket) {
+      targetSocket.leave(`call:${conversationId}`);
+      targetSocket.data.activeCalls?.delete(conversationId);
+    }
+  });
+  callState.delete(userId);
+  io.to(`call:${conversationId}`).emit('call:user-left', { conversationId, userId });
+  if (!callState.size) {
+    activeCalls.delete(conversationId);
+  }
 }
 
 async function emitConversationUpdate(conversationId, userIds = null) {
@@ -870,13 +967,21 @@ app.post(
       const targets = [req.auth.id, ...memberIds];
       targets.forEach((userId) => joinUserToConversationSockets(userId, conversationId));
       await emitConversationUpdate(conversationId, targets);
+      const payloadFor = (userId) => {
+        const member = membersList.find((m) => m.id === userId);
+        return buildConversationPayload(conversation, membersList, {
+          role: member?.role || (userId === req.auth.id ? 'owner' : 'member'),
+          notifications_enabled: 1
+        });
+      };
+
       targets.forEach((userId) => {
         emitToUser(userId, 'conversation:created', {
-          conversation: { ...mapConversation(conversation), members: membersList }
+          conversation: payloadFor(userId)
         });
       });
 
-      return res.status(201).json({ conversation: { ...mapConversation(conversation), members: membersList } });
+      return res.status(201).json({ conversation: payloadFor(req.auth.id) });
     } catch (error) {
       console.error('Create conversation error', error);
       return res.status(500).json({ message: 'Не удалось создать беседу' });
@@ -953,8 +1058,10 @@ app.post(
       await emitConversationUpdate(conversationId);
       const conversation = await fetchConversationById(conversationId);
       const membersList = await fetchConversationMembers(conversationId);
-      emitToUser(req.auth.id, 'conversation:created', { conversation: { ...mapConversation(conversation), members: membersList } });
-      return res.json({ conversation: { ...mapConversation(conversation), members: membersList } });
+      const membership = await ensureMembership(conversationId, req.auth.id);
+      const payload = buildConversationPayload(conversation, membersList, membership);
+      emitToUser(req.auth.id, 'conversation:created', { conversation: payload });
+      return res.json({ conversation: payload });
     } catch (error) {
       console.error('Join conversation error', error);
       return res.status(500).json({ message: 'Не удалось присоединиться к беседе' });
@@ -975,7 +1082,9 @@ app.get(
     }
     const conversation = await fetchConversationById(conversationId);
     const members = await fetchConversationMembers(conversationId);
-    return res.json({ conversation: { ...mapConversation(conversation), members } });
+    return res.json({
+      conversation: buildConversationPayload(conversation, members, membership)
+    });
   }
 );
 
@@ -1084,12 +1193,35 @@ app.put(
 
     const conversation = await fetchConversationById(conversationId);
     const membersList = await fetchConversationMembers(conversationId);
-    const payload = { ...mapConversation(conversation), members: membersList };
+    const broadcastPayload = { ...mapConversation(conversation), members: membersList };
+    const responsePayload = buildConversationPayload(conversation, membersList, membership);
 
     await emitConversationUpdate(conversationId);
-    io.to(`conversation:${conversationId}`).emit('conversation:updated', payload);
+    io.to(`conversation:${conversationId}`).emit('conversation:updated', broadcastPayload);
 
-    return res.json({ conversation: payload });
+    return res.json({ conversation: responsePayload });
+  }
+);
+
+app.put(
+  '/api/conversations/:id/notifications',
+  authGuard,
+  param('id').isInt(),
+  body('enabled').isBoolean(),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = Number(req.params.id);
+    const membership = await ensureMembership(conversationId, req.auth.id);
+    if (!membership) {
+      return res.status(403).json({ message: 'Доступ запрещён' });
+    }
+    const enabled = req.body.enabled ? 1 : 0;
+    await pool.query(
+      'UPDATE conversation_members SET notifications_enabled = ? WHERE conversation_id = ? AND user_id = ?',
+      [enabled, conversationId, req.auth.id]
+    );
+    await emitConversationUpdate(conversationId, [req.auth.id]);
+    return res.json({ enabled: Boolean(enabled) });
   }
 );
 
@@ -1109,8 +1241,9 @@ app.delete(
     if (targetUserId !== req.auth.id && membership.role !== 'owner') {
       return res.status(403).json({ message: 'Только владелец беседы может удалять других' });
     }
-    await pool.query('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?', [conversationId, targetUserId]);
-    leaveUserFromConversationSockets(targetUserId, conversationId);
+  await pool.query('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?', [conversationId, targetUserId]);
+  forceLeaveCall(conversationId, targetUserId);
+  leaveUserFromConversationSockets(targetUserId, conversationId);
     await pool.query(
       `DELETE fi FROM conversation_folder_items fi
        JOIN conversation_folders f ON f.id = fi.folder_id
@@ -1387,6 +1520,59 @@ app.post(
     const message = await fetchMessageById(messageId, req.auth.id);
     io.to(`conversation:${conversationId}`).emit('message:updated', message);
     return res.json({ message });
+  }
+);
+
+app.post(
+  '/api/messages/:id/favorite',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const messageId = Number(req.params.id);
+    const [rows] = await pool.query('SELECT conversation_id, user_id FROM messages WHERE id = ? LIMIT 1', [messageId]);
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Сообщение не найдено' });
+    }
+    const messageRow = rows[0];
+    if (messageRow.user_id !== req.auth.id) {
+      return res.status(403).json({ message: 'Добавлять в избранное можно только свои сообщения' });
+    }
+    await pool.query('INSERT IGNORE INTO message_favorites (user_id, message_id) VALUES (?, ?)', [req.auth.id, messageId]);
+    const message = await fetchMessageById(messageId, req.auth.id);
+    return res.status(201).json({ message });
+  }
+);
+
+app.delete(
+  '/api/messages/:id/favorite',
+  authGuard,
+  param('id').isInt(),
+  validationProblem,
+  async (req, res) => {
+    const messageId = Number(req.params.id);
+    const [rows] = await pool.query('SELECT user_id FROM messages WHERE id = ? LIMIT 1', [messageId]);
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Сообщение не найдено' });
+    }
+    if (rows[0].user_id !== req.auth.id) {
+      return res.status(403).json({ message: 'Можно убирать из избранного только свои сообщения' });
+    }
+    await pool.query('DELETE FROM message_favorites WHERE user_id = ? AND message_id = ?', [req.auth.id, messageId]);
+    return res.json({ ok: true });
+  }
+);
+
+app.get(
+  '/api/favorites',
+  authGuard,
+  query('conversationId').optional().isInt({ min: 1 }),
+  validationProblem,
+  async (req, res) => {
+    const conversationId = req.query.conversationId ? Number(req.query.conversationId) : null;
+    const favorites = await fetchFavoriteMessages(req.auth.id);
+    const filtered = conversationId ? favorites.filter((message) => message.conversationId === conversationId) : favorites;
+    return res.json({ favorites: filtered });
   }
 );
 
@@ -1747,6 +1933,14 @@ app.use((req, res, next) => {
   return next();
 });
 const userSockets = new Map();
+const activeCalls = new Map(); // conversationId -> Map<userId, { sockets: Set<string>, user: object, muted: boolean, screenSharing: boolean }>
+
+function getCallState(conversationId) {
+  if (!activeCalls.has(conversationId)) {
+    activeCalls.set(conversationId, new Map());
+  }
+  return activeCalls.get(conversationId);
+}
 
 io.use(async (socket, next) => {
   try {
@@ -1773,10 +1967,12 @@ io.on('connection', async (socket) => {
     return;
   }
 
+  socket.data.activeCalls = new Set();
+
   let sockets = userSockets.get(user.id);
   if (!sockets) {
     sockets = new Set();
-    userSockets.set(user.id, sockets);
+    socket.data.conversations?.delete(conversationId);
   }
   sockets.add(socket);
 
@@ -1889,7 +2085,77 @@ io.on('connection', async (socket) => {
     }
   });
 
+  socket.on('call:join', ({ conversationId }) => {
+    const callId = Number(conversationId);
+    if (!callId || !socket.data.conversations.has(callId)) return;
+    socket.join(`call:${callId}`);
+    socket.data.activeCalls.add(callId);
+    const callState = getCallState(callId);
+    let entry = callState.get(user.id);
+    if (!entry) {
+      entry = {
+        sockets: new Set(),
+        user: { ...user },
+        muted: false,
+        screenSharing: false
+      };
+      callState.set(user.id, entry);
+    } else {
+      entry.user = { ...entry.user, ...user };
+    }
+    entry.sockets.add(socket.id);
+    const participants = Array.from(callState.values()).map((participant) => ({
+      user: participant.user,
+      muted: participant.muted,
+      screenSharing: participant.screenSharing
+    }));
+    socket.emit('call:participants', { conversationId: callId, participants });
+    socket.to(`call:${callId}`).emit('call:user-joined', { conversationId: callId, user: entry.user });
+  });
+
+  socket.on('call:signal', ({ conversationId, targetUserId, data }) => {
+    const callId = Number(conversationId);
+    const targetId = Number(targetUserId);
+    if (!callId || !targetId || !socket.data.activeCalls.has(callId)) return;
+    const callState = activeCalls.get(callId);
+    const target = callState?.get(targetId);
+    if (!target) return;
+    target.sockets.forEach((socketId) => {
+      io.to(socketId).emit('call:signal', {
+        conversationId: callId,
+        fromUserId: user.id,
+        data
+      });
+    });
+  });
+
+  socket.on('call:state', ({ conversationId, muted, screenSharing }) => {
+    const callId = Number(conversationId);
+    if (!callId || !socket.data.activeCalls.has(callId)) return;
+    const callState = activeCalls.get(callId);
+    const entry = callState?.get(user.id);
+    if (!entry) return;
+    if (typeof muted === 'boolean') entry.muted = muted;
+    if (typeof screenSharing === 'boolean') entry.screenSharing = screenSharing;
+    socket.to(`call:${callId}`).emit('call:state', {
+      conversationId: callId,
+      userId: user.id,
+      muted: entry.muted,
+      screenSharing: entry.screenSharing
+    });
+  });
+
+  socket.on('call:leave', ({ conversationId }) => {
+    const callId = Number(conversationId);
+    if (!callId || !socket.data.activeCalls.has(callId)) return;
+    leaveCall(callId, socket);
+  });
+
   socket.on('disconnect', async () => {
+    const activeCallIds = Array.from(socket.data.activeCalls || []);
+    activeCallIds.forEach((conversationId) => {
+      leaveCall(conversationId, socket);
+    });
     const socketsSet = userSockets.get(user.id);
     if (socketsSet) {
       socketsSet.delete(socket);

@@ -570,12 +570,19 @@ app.post(
 app.post(
   '/api/conversations/direct',
   authGuard,
-  body('username').isLength({ min: 3 }),
+  body('username').isString().isLength({ min: 3, max: 64 }).withMessage('Укажите логин или ID собеседника'),
   validationProblem,
   async (req, res) => {
     try {
-      const username = String(req.body.username).toLowerCase();
-      const user = await findUserByUsername(username);
+      const rawIdentifier = String(req.body.username || '').trim();
+      if (!rawIdentifier) {
+        return res.status(400).json({ message: 'Укажите логин или ID собеседника' });
+      }
+
+      let user = await findUserByUsername(rawIdentifier.toLowerCase());
+      if (!user && rawIdentifier.length >= 4) {
+        user = await findUserByPublicId(rawIdentifier.toUpperCase());
+      }
       if (!user) {
         return res.status(404).json({ message: 'Пользователь не найден' });
       }
@@ -600,7 +607,12 @@ app.post(
         const shareCode = await generateConversationCode();
         const [result] = await pool.query(
           'INSERT INTO conversations (share_code, type, title, description, creator_id, is_private) VALUES (?, \'direct\', ?, ?, ?, 1)',
-          [shareCode, `${req.auth.id}-${user.id}`, `Личный чат ${req.auth.id}-${user.id}`, req.auth.id]
+          [
+            shareCode,
+            user.display_name || user.username,
+            `Личный чат с ${user.display_name || user.username}`,
+            req.auth.id
+          ]
         );
         conversationId = result.insertId;
         await pool.query(

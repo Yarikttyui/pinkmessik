@@ -139,6 +139,7 @@
     }
     localStorage.removeItem('pink:token');
     localStorage.removeItem('pink:user');
+    closeAllModals();
   }
 
   function handleUnauthorized() {
@@ -258,6 +259,12 @@
     modal.classList.add('hidden');
   }
 
+  function closeAllModals() {
+    [elements.profileModal, elements.groupModal, elements.directModal, elements.joinModal].forEach((modal) => {
+      if (modal) modal.classList.add('hidden');
+    });
+  }
+
   document.querySelectorAll('.modal [data-close]').forEach((btn) => {
     btn.addEventListener('click', () => {
       closeModal(btn.closest('.modal'));
@@ -335,9 +342,14 @@
     event.preventDefault();
     try {
       const payload = serializeForm(elements.directForm);
+      const identifier = (payload.username || '').trim();
+      if (!identifier) {
+        showToast('Укажите логин или ID собеседника', 'error');
+        return;
+      }
       const data = await apiRequest('/api/conversations/direct', {
         method: 'POST',
-        body: JSON.stringify({ username: payload.username })
+        body: JSON.stringify({ username: identifier })
       });
       closeModal(elements.directModal);
       upsertConversations([data.conversation]);

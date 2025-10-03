@@ -345,6 +345,29 @@ function emitToUser(userId, event, payload) {
   sockets.forEach((socket) => socket.emit(event, payload));
 }
 
+function joinUserToConversationSockets(userId, conversationId) {
+  const sockets = userSockets.get(userId);
+  if (!sockets) return;
+  sockets.forEach((socket) => {
+    if (!socket.data.conversations) {
+      socket.data.conversations = new Set();
+    }
+    if (!socket.data.conversations.has(conversationId)) {
+      socket.data.conversations.add(conversationId);
+    }
+    socket.join(`conversation:${conversationId}`);
+  });
+}
+
+function leaveUserFromConversationSockets(userId, conversationId) {
+  const sockets = userSockets.get(userId);
+  if (!sockets) return;
+  sockets.forEach((socket) => {
+    socket.leave(`conversation:${conversationId}`);
+    socket.data.conversations?.delete(conversationId);
+  });
+}
+
 async function emitConversationUpdate(conversationId, userIds = null) {
   let targets = userIds;
   if (!targets || !targets.length) {
@@ -606,6 +629,7 @@ app.post(
       const membersList = await fetchConversationMembers(conversationId);
 
       const targets = [req.auth.id, ...memberIds];
+      targets.forEach((userId) => joinUserToConversationSockets(userId, conversationId));
       await emitConversationUpdate(conversationId, targets);
       targets.forEach((userId) => {
         emitToUser(userId, 'conversation:created', {
@@ -678,6 +702,8 @@ app.post(
       const membersList = await fetchConversationMembers(conversationId);
       const payload = { ...mapConversation(conversation), members: membersList };
 
+  joinUserToConversationSockets(req.auth.id, conversationId);
+  joinUserToConversationSockets(user.id, conversationId);
       await emitConversationUpdate(conversationId, [req.auth.id, user.id]);
       emitToUser(req.auth.id, 'conversation:created', { conversation: payload });
       emitToUser(user.id, 'conversation:created', { conversation: payload });
@@ -707,6 +733,7 @@ app.post(
         'INSERT IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)',
         [conversationId, req.auth.id, 'member']
       );
+      joinUserToConversationSockets(req.auth.id, conversationId);
       await emitConversationUpdate(conversationId);
       const conversation = await fetchConversationById(conversationId);
       const membersList = await fetchConversationMembers(conversationId);
@@ -760,6 +787,7 @@ app.post(
       'INSERT IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)',
       [conversationId, user.id, 'member']
     );
+    joinUserToConversationSockets(user.id, conversationId);
     const members = await fetchConversationMembers(conversationId);
     await emitConversationUpdate(conversationId, members.map((m) => m.id));
     emitToUser(user.id, 'conversation:member-added', { conversationId, members });
@@ -784,6 +812,7 @@ app.delete(
       return res.status(403).json({ message: 'Только владелец беседы может удалять других' });
     }
     await pool.query('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?', [conversationId, targetUserId]);
+    leaveUserFromConversationSockets(targetUserId, conversationId);
     const members = await fetchConversationMembers(conversationId);
     await emitConversationUpdate(conversationId, members.map((m) => m.id));
     emitToUser(targetUserId, 'conversation:member-removed', { conversationId });

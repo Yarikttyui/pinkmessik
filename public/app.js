@@ -690,10 +690,27 @@
 
   document.querySelectorAll('[data-copy]').forEach((btn) => {
     const targetId = btn.getAttribute('data-copy');
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const value = document.getElementById(targetId)?.textContent;
       if (!value) return;
-      navigator.clipboard.writeText(value).then(() => showToast('Скопировано', 'success'));
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(value);
+        } else {
+          const textarea = document.createElement('textarea');
+          textarea.value = value;
+          textarea.setAttribute('readonly', '');
+          textarea.style.position = 'absolute';
+          textarea.style.left = '-9999px';
+          document.body.append(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          textarea.remove();
+        }
+        showToast('Скопировано', 'success');
+      } catch (error) {
+        showToast('Не удалось скопировать', 'error');
+      }
     });
   });
   function ensureConversationOrder() {
@@ -1235,6 +1252,11 @@
   function openConversation(conversationId) {
     if (!state.conversations.has(conversationId)) return;
     state.currentConversationId = conversationId;
+    const current = state.conversations.get(conversationId);
+    if (current && current.unreadCount) {
+      state.conversations.set(conversationId, { ...current, unreadCount: 0 });
+      renderConversationList();
+    }
     elements.chatPlaceholder.classList.add('hidden');
     elements.chatPane.classList.remove('hidden');
 
@@ -1296,7 +1318,7 @@
     if (!state.token) return;
     const socket = io({
       auth: { token: state.token },
-      transports: ['polling', 'websocket']
+      transports: ['websocket', 'polling']
     });
 
     socket.on('connect_error', (err) => {

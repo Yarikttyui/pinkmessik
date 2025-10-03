@@ -262,6 +262,13 @@ textarea:focus {
   font-size: 20px;
 }
 
+.avatar--image {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  color: transparent;
+}
+
 .profile-meta h2 {
   font-size: 18px;
   font-weight: 700;

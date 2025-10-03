@@ -129,6 +129,7 @@ function mapUser(row) {
 }
 
 function mapConversation(row) {
+  const lastMessage = safeJsonParse(row.last_message);
   return {
     id: row.id,
     shareCode: row.share_code,
@@ -139,7 +140,7 @@ function mapConversation(row) {
     creatorId: row.creator_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    lastMessage: row.last_message ? JSON.parse(row.last_message) : null,
+    lastMessage,
     unreadCount: row.unread_count ? Number(row.unread_count) : 0
   };
 }
@@ -155,8 +156,8 @@ function mapAttachment(row) {
 }
 
 function mapMessage(row, currentUserId) {
-  const attachments = row.attachments ? JSON.parse(row.attachments) : [];
-  const reactions = row.reactions ? JSON.parse(row.reactions) : [];
+  const attachments = safeJsonParse(row.attachments, []);
+  const reactions = safeJsonParse(row.reactions, []);
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -181,6 +182,24 @@ function mapMessage(row, currentUserId) {
       reacted: reaction.userIds.includes(currentUserId)
     }))
   };
+}
+
+function safeJsonParse(value, fallback = null) {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      console.warn('Failed to parse JSON value', error);
+      return fallback;
+    }
+  }
+  return fallback;
 }
 
 async function fetchConversationMembers(conversationId) {

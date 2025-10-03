@@ -144,6 +144,8 @@ async function ensureColumns() {
 
   await ensureColumn(db, 'users', 'public_id', "ALTER TABLE users ADD COLUMN public_id CHAR(16) NOT NULL DEFAULT '' AFTER id");
   await ensureColumn(db, 'conversations', 'share_code', "ALTER TABLE conversations ADD COLUMN share_code CHAR(12) NOT NULL DEFAULT '' AFTER id");
+  await ensureColumn(db, 'users', 'avatar_url', "ALTER TABLE users ADD COLUMN avatar_url VARCHAR(255) NULL AFTER avatar_color");
+  await ensureColumn(db, 'users', 'bio', "ALTER TABLE users ADD COLUMN bio VARCHAR(500) NULL AFTER status_message");
 
   await db.query(`
     UPDATE users

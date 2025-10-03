@@ -1,0 +1,207 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pink Messenger</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/socket.io/socket.io.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="background"></div>
+  <section class="auth-screen" id="authScreen">
+    <div class="auth-card">
+      <div class="auth-left">
+        <h1>Pink Talk</h1>
+        <p>Современный розовый мессенджер. Общайтесь в группах и личных чатах, делитесь файлами, реакциями и статусами.</p>
+      </div>
+      <div class="auth-right">
+        <div class="auth-tabs">
+          <button class="tab active" data-target="login">Вход</button>
+          <button class="tab" data-target="register">Регистрация</button>
+        </div>
+        <form id="loginForm" class="form active" autocomplete="off">
+          <label>Логин
+            <input type="text" name="username" minlength="3" maxlength="32" required placeholder="pinkstar">
+          </label>
+          <label>Пароль
+            <input type="password" name="password" minlength="6" required placeholder="••••••">
+          </label>
+          <button type="submit" class="primary">Войти</button>
+          <p class="form-helper">Нет аккаунта? <span class="link" data-switch="register">Создайте его</span></p>
+        </form>
+        <form id="registerForm" class="form" autocomplete="off">
+          <label>Логин
+            <input type="text" name="username" minlength="3" maxlength="32" required placeholder="pinkstar">
+          </label>
+          <label>Пароль
+            <input type="password" name="password" minlength="6" required placeholder="Минимум 6 символов">
+          </label>
+          <button type="submit" class="primary">Создать аккаунт</button>
+          <p class="form-helper">Уже есть аккаунт? <span class="link" data-switch="login">Войдите</span></p>
+        </form>
+        <p class="form-message" id="authMessage"></p>
+      </div>
+    </div>
+  </section>
+
+  <div class="app-shell hidden" id="appShell">
+    <aside class="sidebar">
+      <div class="profile-card">
+        <div class="profile-header">
+          <div class="avatar" id="profileAvatar"></div>
+          <div class="profile-meta">
+            <h2 id="profileName"></h2>
+            <p id="profileStatus"></p>
+          </div>
+        </div>
+        <div class="profile-codes">
+          <span>ID: <strong id="profileCode"></strong> <button class="ghost tiny" data-copy="profileCode">Копировать</button></span>
+        </div>
+        <div class="profile-actions">
+          <button class="ghost" id="profileEditBtn">Редактировать</button>
+          <button class="ghost" id="logoutBtn">Выйти</button>
+        </div>
+      </div>
+
+      <div class="sidebar-actions">
+        <button class="primary" id="newGroupBtn">+ Новая беседа</button>
+        <button class="ghost" id="joinByCodeBtn">Присоединиться по коду</button>
+        <button class="ghost" id="newDirectBtn">+ Личный чат</button>
+      </div>
+
+      <div class="sidebar-search">
+        <input type="text" id="conversationFilter" placeholder="Поиск беседы или пользователя">
+      </div>
+      <div class="conversation-list" id="conversationList"></div>
+    </aside>
+
+    <main class="chat">
+      <div class="chat-placeholder" id="chatPlaceholder">
+        <h1>Pink Talk 2.0</h1>
+        <p>Выберите беседу слева или создайте новую. Вы можете делиться кодом беседы, чтобы друзья присоединились в пару кликов.</p>
+      </div>
+
+      <section class="chat-pane hidden" id="chatPane">
+        <header class="chat-header">
+          <div class="chat-title">
+            <div class="avatar" id="conversationAvatar"></div>
+            <div>
+              <h2 id="conversationTitle"></h2>
+              <p id="conversationMeta"></p>
+              <span class="chat-code">Код беседы: <strong id="conversationCode"></strong> <button class="ghost tiny" data-copy="conversationCode">Скопировать</button></span>
+            </div>
+          </div>
+          <div class="chat-actions">
+            <button class="ghost" id="addMemberBtn">Пригласить</button>
+            <button class="ghost" id="detailsToggleBtn">Участники</button>
+          </div>
+        </header>
+
+        <div class="typing-line hidden" id="typingIndicator"></div>
+
+        <div class="history" id="messageScroller">
+          <button class="ghost tiny hidden" id="loadMoreBtn">Показать ранние</button>
+          <div class="message-list" id="messageList"></div>
+        </div>
+
+        <form class="composer" id="messageForm" autocomplete="off">
+          <div class="attachment-bar hidden" id="attachmentBar"></div>
+          <div class="composer-row">
+            <label class="attachment-btn" title="Прикрепить изображение">
+              <input type="file" id="attachmentInput" accept="image/*" hidden>
+              📎
+            </label>
+            <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Напишите сообщение..."></textarea>
+            <button type="submit" class="primary">Отправить</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <aside class="details-panel hidden" id="detailsPanel">
+      <div class="details-header">
+        <h3>Участники</h3>
+        <button class="ghost" id="detailsCloseBtn">×</button>
+      </div>
+      <ul class="member-list" id="memberList"></ul>
+    </aside>
+  </div>
+
+  <div class="modal hidden" id="profileModal">
+    <div class="modal-content">
+      <h2>Настройки профиля</h2>
+      <form id="profileForm">
+        <label>Имя
+          <input type="text" name="displayName" minlength="2" maxlength="60" required>
+        </label>
+        <label>Статус
+          <input type="text" name="statusMessage" maxlength="160" placeholder="Например: На связи">
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Сохранить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="groupModal">
+    <div class="modal-content">
+      <h2>Новая беседа</h2>
+      <form id="groupForm">
+        <label>Название
+          <input type="text" name="title" minlength="3" maxlength="100" required>
+        </label>
+        <label>Описание
+          <textarea name="description" rows="3" maxlength="500" placeholder="О чём эта беседа?"></textarea>
+        </label>
+        <label>Участники (логины через запятую)
+          <input type="text" name="members" placeholder="user1, user2">
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="isPrivate">
+          <span>Сделать беседу закрытой</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Создать</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="directModal">
+    <div class="modal-content">
+      <h2>Новый личный чат</h2>
+      <form id="directForm">
+        <label>Логин собеседника
+          <input type="text" name="username" minlength="3" maxlength="32" required>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Начать</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="joinModal">
+    <div class="modal-content">
+      <h2>Присоединиться по коду</h2>
+      <form id="joinForm">
+        <label>Код беседы
+          <input type="text" name="code" minlength="5" maxlength="16" required placeholder="C123ABC456">
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="ghost" data-close>Отмена</button>
+          <button type="submit" class="primary">Присоединиться</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+</body>
+</html>

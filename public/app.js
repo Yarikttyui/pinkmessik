@@ -90,11 +90,11 @@
     favoritesBtn: document.getElementById('favoritesBtn'),
     favoritesModal: document.getElementById('favoritesModal'),
     favoritesList: document.getElementById('favoritesList'),
-  forwardModal: document.getElementById('forwardModal'),
-  forwardForm: document.getElementById('forwardForm'),
-  forwardConversationSelect: document.getElementById('forwardConversationSelect'),
-  forwardUserInput: document.getElementById('forwardUserInput'),
-  forwardCommentInput: document.getElementById('forwardCommentInput'),
+    forwardModal: document.getElementById('forwardModal'),
+    forwardForm: document.getElementById('forwardForm'),
+    forwardConversationSelect: document.getElementById('forwardConversationSelect'),
+    forwardUserInput: document.getElementById('forwardUserInput'),
+    forwardCommentInput: document.getElementById('forwardCommentInput'),
     conversationSettingsBtn: document.getElementById('conversationSettingsBtn'),
     conversationModal: document.getElementById('conversationModal'),
     conversationForm: document.getElementById('conversationForm'),
@@ -118,6 +118,10 @@
     callLeaveBtn: document.getElementById('callLeaveBtn'),
     toast: document.getElementById('toast'),
     pinnedBar: document.getElementById('pinnedBar'),
+    selectionBar: document.getElementById('selectionBar'),
+    selectionCount: document.getElementById('selectionCount'),
+    selectionForwardBtn: document.getElementById('selectionForwardBtn'),
+    selectionClearBtn: document.getElementById('selectionClearBtn'),
     messageContextMenu: document.getElementById('messageContextMenu')
   };
 
@@ -169,13 +173,18 @@
       scriptPromise: null,
       api: null
     },
+    forward: {
+      messageId: null
+    },
     reactionMenu: {
       messageId: null
     },
     replyTo: null,
     selectedMessages: new Set(),
     contextMenu: {
-      messageId: null
+      messageId: null,
+      x: 0,
+      y: 0
     },
     pins: new Map()
   };
@@ -522,9 +531,17 @@
     state.favorites = [];
     state.favoritesLoaded = false;
     state.replyTo = null;
+  clearSelectedMessages();
   state.selectedMessages = new Set();
-  state.contextMenu = { messageId: null };
-  state.pins = new Map();
+    state.forward = { messageId: null };
+    state.contextMenu = { messageId: null, x: 0, y: 0 };
+    state.pins = new Map();
+    renderSelectionState();
+    if (elements.pinnedBar) {
+      elements.pinnedBar.innerHTML = '';
+      elements.pinnedBar.classList.add('hidden');
+    }
+    closeForwardModal();
     state.conversationDraft = {
       avatarAttachmentId: null,
       avatarUrl: null,
@@ -549,6 +566,7 @@
     state.socketErrorShown = false;
     }
     closeMediaViewer();
+  closeContextMenu();
     localStorage.removeItem('pink:token');
     localStorage.removeItem('pink:user');
     if (elements.conversationFilter) {
@@ -940,17 +958,28 @@
       elements.directModal,
       elements.joinModal,
       elements.memberModal,
+      elements.forwardModal,
       elements.folderModal,
       elements.conversationModal,
       elements.favoritesModal
     ].forEach((modal) => {
-      if (modal) modal.classList.add('hidden');
+      if (!modal) return;
+      if (modal === elements.forwardModal) {
+        closeForwardModal();
+      } else {
+        modal.classList.add('hidden');
+      }
     });
   }
 
   document.querySelectorAll('.modal [data-close]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      closeModal(btn.closest('.modal'));
+      const modal = btn.closest('.modal');
+      if (modal === elements.forwardModal) {
+        closeForwardModal();
+      } else {
+        closeModal(modal);
+      }
     });
   });
 
@@ -960,12 +989,19 @@
     elements.directModal,
     elements.joinModal,
     elements.memberModal,
+    elements.forwardModal,
     elements.folderModal,
     elements.conversationModal,
     elements.favoritesModal
   ].forEach((modal) => {
     modal?.addEventListener('click', (event) => {
-      if (event.target === modal) closeModal(modal);
+      if (event.target === modal) {
+        if (modal === elements.forwardModal) {
+          closeForwardModal();
+        } else {
+          closeModal(modal);
+        }
+      }
     });
   });
 
@@ -1826,12 +1862,19 @@
     elements.messageList.append(fragment);
     const hasMore = state.hasMoreHistory.get(conversationId);
     elements.loadMoreBtn.classList.toggle('hidden', !hasMore);
+    if (state.contextMenu.messageId) {
+      highlightContextMessage(state.contextMenu.messageId);
+    }
+    renderSelectionState();
   }
   function renderMessage(message) {
     const isOwn = message.user?.id === state.user?.id;
     const item = document.createElement('article');
     item.className = 'message';
     if (isOwn) item.classList.add('own');
+    if (message.pinnedAt) item.classList.add('message--pinned');
+    if (state.selectedMessages.has(message.id)) item.classList.add('message--selected');
+    if (state.contextMenu.messageId === message.id) item.classList.add('message--context');
     item.dataset.messageId = message.id;
 
     const avatar = document.createElement('div');
@@ -1862,6 +1905,12 @@
       deleted.textContent = 'Сообщение удалено';
       bubble.append(deleted);
     } else {
+      if (message.pinnedAt) {
+        const pinBadge = document.createElement('div');
+        pinBadge.className = 'pin-badge';
+        pinBadge.innerHTML = `<span class="pin-badge-icon">📌</span>${message.pinnedBy?.displayName || message.pinnedBy?.username ? `Закрепил ${message.pinnedBy.displayName || `@${message.pinnedBy.username}`}` : 'Закреплённое сообщение'}`;
+        bubble.append(pinBadge);
+      }
       if (message.replyTo) {
         const replySnippet = document.createElement('button');
         replySnippet.type = 'button';
@@ -2004,10 +2053,12 @@
     const attachments = state.pendingAttachments.map((file) => file.id);
     if (!content && !attachments.length) return;
 
+    const parentId = state.replyTo && state.replyTo.conversationId === conversationId ? state.replyTo.id : null;
+
     state.sending = true;
     state.socket?.emit('typing:stop', { conversationId });
 
-    state.socket?.emit('message:create', { conversationId, content, attachments }, (response) => {
+    state.socket?.emit('message:create', { conversationId, content, attachments, parentId }, (response) => {
       state.sending = false;
       if (!response?.ok) {
         showToast(response?.message || 'Не удалось отправить сообщение', 'error');
@@ -2016,9 +2067,16 @@
       elements.messageInput.value = '';
       state.pendingAttachments = [];
       renderAttachmentBar();
+      clearReplyTarget();
       scrollToBottom(true);
     });
   });
+
+  if (elements.replyPreviewClose) {
+    elements.replyPreviewClose.addEventListener('click', () => {
+      clearReplyTarget();
+    });
+  }
 
   elements.attachmentInput.addEventListener('change', async (event) => {
     const files = Array.from(event.target.files || []);
@@ -2102,6 +2160,44 @@
       chip.append(remove);
       elements.attachmentBar.append(chip);
     });
+  }
+
+  function renderReplyPreview() {
+    if (!elements.replyPreview) return;
+    const target = state.replyTo;
+    const isValid = target && target.conversationId === state.currentConversationId;
+    if (!isValid) {
+      elements.replyPreview.classList.add('hidden');
+      if (elements.replyPreviewAuthor) elements.replyPreviewAuthor.textContent = '';
+      if (elements.replyPreviewText) elements.replyPreviewText.textContent = '';
+      return;
+    }
+    const authorName = target.user?.displayName || target.user?.username || 'Сообщение';
+    const preview = buildMessageExcerpt(target) || 'Без текста';
+    elements.replyPreview.classList.remove('hidden');
+    if (elements.replyPreviewAuthor) elements.replyPreviewAuthor.textContent = authorName;
+    if (elements.replyPreviewText) elements.replyPreviewText.textContent = preview;
+  }
+
+  function setReplyTarget(message) {
+    if (!message) return;
+    state.replyTo = {
+      id: message.id,
+      conversationId: message.conversationId,
+      content: message.content,
+      attachments: message.attachments,
+      user: message.user
+    };
+    renderReplyPreview();
+    if (elements.messageInput) {
+      elements.messageInput.focus();
+    }
+    closeContextMenu();
+  }
+
+  function clearReplyTarget() {
+    state.replyTo = null;
+    renderReplyPreview();
   }
 
   function setRecordingButtonState(activeType) {
@@ -2809,8 +2905,7 @@
 
     const deleteButton = event.target.closest('.action-delete');
     if (deleteButton) {
-      if (!confirm('Удалить сообщение?')) return;
-      apiRequest(`/api/messages/${messageId}`, { method: 'DELETE' }).catch((error) => showToast(error.message || 'Не удалось удалить сообщение', 'error'));
+      deleteMessage(message);
       return;
     }
 
@@ -2819,6 +2914,19 @@
       toggleFavorite(message);
       return;
     }
+  });
+
+  elements.messageList.addEventListener('contextmenu', (event) => {
+    const messageElement = event.target.closest('.message');
+    if (!messageElement) {
+      closeContextMenu();
+      return;
+    }
+    event.preventDefault();
+    const messageId = Number(messageElement.dataset.messageId);
+    const message = findMessage(messageId);
+    if (!message) return;
+    openContextMenuForMessage(message, event.clientX, event.clientY);
   });
 
   function toggleReaction(message, emoji) {
@@ -2883,6 +2991,475 @@
     }, 150);
   }
 
+  function clearContextHighlight() {
+    if (!elements.messageList) return;
+    elements.messageList.querySelectorAll('.message--context').forEach((node) => node.classList.remove('message--context'));
+  }
+
+  function highlightContextMessage(messageId) {
+    if (!elements.messageList || !messageId) return;
+    clearContextHighlight();
+    const node = elements.messageList.querySelector(`[data-message-id="${messageId}"]`);
+    if (node) {
+      node.classList.add('message--context');
+    }
+  }
+
+  function closeContextMenu() {
+    if (!elements.messageContextMenu) return;
+    const wasOpen = state.contextMenu.messageId !== null;
+    const previousId = state.contextMenu.messageId;
+    state.contextMenu = { messageId: null, x: 0, y: 0 };
+    if (!wasOpen) return;
+    elements.messageContextMenu.classList.remove('visible');
+    elements.messageContextMenu.dataset.messageId = '';
+    setTimeout(() => {
+      if (state.contextMenu.messageId === null) {
+        elements.messageContextMenu.classList.add('hidden');
+        elements.messageContextMenu.innerHTML = '';
+        elements.messageContextMenu.style.left = '';
+        elements.messageContextMenu.style.top = '';
+      }
+    }, 150);
+    if (previousId) {
+      const node = elements.messageList?.querySelector(`[data-message-id="${previousId}"]`);
+      node?.classList.remove('message--context');
+    }
+  }
+
+  function canPinMessages(conversationId) {
+    const conversation = state.conversations.get(conversationId);
+    const role = conversation?.membershipRole || conversation?.role || null;
+    return role === 'owner' || role === 'admin';
+  }
+
+  function getContextMenuActions(message) {
+    const actions = [];
+    if (!message) return actions;
+    if (!message.deletedAt) {
+      actions.push({
+        key: 'reply',
+        label: 'Ответить',
+        icon: '↩️',
+        handler: () => setReplyTarget(message)
+      });
+
+      if (canPinMessages(message.conversationId)) {
+        const isPinned = Boolean(message.pinnedAt);
+        actions.push({
+          key: 'pin',
+          label: isPinned ? 'Открепить' : 'Закрепить',
+          icon: '📌',
+          handler: () => togglePinMessage(message)
+        });
+      }
+
+      if (message.content) {
+        actions.push({
+          key: 'copy',
+          label: 'Скопировать текст',
+          icon: '📋',
+          handler: () => copyMessageText(message)
+        });
+      }
+
+      actions.push({
+        key: 'forward',
+        label: 'Переслать',
+        icon: '➡️',
+        handler: () => openForwardModal(message)
+      });
+
+      if (message.user?.id === state.user?.id) {
+        actions.push({
+          key: 'delete',
+          label: 'Удалить',
+          icon: '🗑️',
+          danger: true,
+          handler: () => deleteMessage(message)
+        });
+      }
+    }
+
+    const selected = state.selectedMessages.has(message.id);
+    actions.push({
+      key: 'select',
+      label: selected ? 'Снять выделение' : 'Выделить',
+      icon: selected ? '☑️' : '✅',
+      handler: () => toggleMessageSelection(message.id, !selected)
+    });
+
+    return actions;
+  }
+
+  function openContextMenuForMessage(message, clientX, clientY) {
+    if (!elements.messageContextMenu || !message) return;
+    closeReactionMenu();
+    const actions = getContextMenuActions(message);
+    if (!actions.length) return;
+
+    const menu = elements.messageContextMenu;
+    menu.innerHTML = '';
+    actions.forEach((action) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.action = action.key;
+      if (action.danger) button.classList.add('danger');
+      const icon = document.createElement('span');
+      icon.className = 'context-menu-icon';
+      icon.textContent = action.icon;
+      const label = document.createElement('span');
+      label.textContent = action.label;
+      button.append(icon, label);
+      button.addEventListener('click', () => {
+        closeContextMenu();
+        action.handler?.();
+      });
+      menu.append(button);
+    });
+
+    menu.classList.remove('hidden');
+    menu.style.left = `${clientX}px`;
+    menu.style.top = `${clientY}px`;
+    menu.dataset.messageId = String(message.id);
+    requestAnimationFrame(() => {
+      const rect = menu.getBoundingClientRect();
+      let left = clientX;
+      let top = clientY;
+      const padding = 12;
+      if (left + rect.width > window.innerWidth - padding) {
+        left = window.innerWidth - rect.width - padding;
+      }
+      if (top + rect.height > window.innerHeight - padding) {
+        top = window.innerHeight - rect.height - padding;
+      }
+      if (left < padding) left = padding;
+      if (top < padding) top = padding;
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+      menu.classList.add('visible');
+    });
+
+    state.contextMenu = { messageId: message.id, x: clientX, y: clientY };
+    highlightContextMessage(message.id);
+  }
+
+  function pluralize(count, [one, few, many]) {
+    const mod10 = count % 10;
+    const mod100 = count % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+    return many;
+  }
+
+  function renderSelectionState() {
+    if (!elements.selectionBar || !elements.selectionCount) return;
+    const count = state.selectedMessages.size;
+    if (!count) {
+      elements.selectionBar.classList.add('hidden');
+      elements.selectionCount.textContent = '';
+      return;
+    }
+    const noun = pluralize(count, ['сообщение', 'сообщения', 'сообщений']);
+    elements.selectionCount.textContent = `Выбрано ${count} ${noun}`;
+    elements.selectionBar.classList.remove('hidden');
+  }
+
+  function toggleMessageSelection(messageId, shouldSelect) {
+    if (!messageId) return;
+    const wasSelected = state.selectedMessages.has(messageId);
+    const nextState = typeof shouldSelect === 'boolean' ? shouldSelect : !wasSelected;
+    if (nextState === wasSelected) return;
+    if (nextState) {
+      state.selectedMessages.add(messageId);
+    } else {
+      state.selectedMessages.delete(messageId);
+    }
+    const node = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
+    if (node) {
+      node.classList.toggle('message--selected', nextState);
+    }
+    renderSelectionState();
+  }
+
+  function clearSelectedMessages() {
+    if (!state.selectedMessages.size) return;
+    state.selectedMessages.forEach((messageId) => {
+      const node = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
+      node?.classList.remove('message--selected');
+    });
+    state.selectedMessages.clear();
+    renderSelectionState();
+  }
+
+  async function copyMessageText(message) {
+    if (!message?.content) {
+      showToast('Нет текста для копирования', 'info');
+      return;
+    }
+    const text = message.content.trim();
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'absolute';
+        textarea.style.left = '-9999px';
+        document.body.append(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      showToast('Текст скопирован', 'success');
+    } catch (error) {
+      console.error('Clipboard error', error);
+      showToast('Не удалось скопировать текст', 'error');
+    }
+  }
+
+  async function deleteMessage(message) {
+    if (!message) return;
+    if (message.user?.id !== state.user?.id) {
+      showToast('Можно удалить только свои сообщения', 'error');
+      return;
+    }
+    if (!confirm('Удалить сообщение?')) return;
+    try {
+      await apiRequest(`/api/messages/${message.id}`, { method: 'DELETE' });
+      showToast('Сообщение удалено', 'success');
+    } catch (error) {
+      showToast(error.message || 'Не удалось удалить сообщение', 'error');
+    }
+  }
+
+  async function togglePinMessage(message) {
+    if (!message) return;
+    if (!canPinMessages(message.conversationId)) {
+      showToast('У вас нет прав закреплять сообщения', 'error');
+      return;
+    }
+    const pinned = Boolean(message.pinnedAt);
+    try {
+      const response = await apiRequest(`/api/messages/${message.id}/pin`, { method: pinned ? 'DELETE' : 'POST' });
+      const pins = response?.pins || [];
+      applyPinnedMessages(message.conversationId, pins);
+      showToast(pinned ? 'Сообщение откреплено' : 'Сообщение закреплено', 'success');
+    } catch (error) {
+      showToast(error.message || (pinned ? 'Не удалось открепить' : 'Не удалось закрепить'), 'error');
+    }
+  }
+
+  function applyPinnedMessages(conversationId, pins = []) {
+    if (!conversationId) return;
+    const normalized = Array.isArray(pins) ? pins : [];
+    state.pins.set(conversationId, normalized);
+
+    const list = state.messages.get(conversationId) || [];
+    const pinnedMap = new Map(normalized.map((pin) => [pin.id, pin]));
+    let changed = false;
+
+    const updatedList = list.map((message) => {
+      if (pinnedMap.has(message.id)) {
+        const pin = pinnedMap.get(message.id);
+        const merged = { ...message, ...pin };
+        if (message.pinnedAt !== merged.pinnedAt || message.pinnedBy?.id !== merged.pinnedBy?.id) {
+          changed = true;
+        }
+        return merged;
+      }
+      if (message.pinnedAt || message.pinnedBy) {
+        changed = true;
+        return { ...message, pinnedAt: null, pinnedBy: null };
+      }
+      return message;
+    });
+
+    if (changed) {
+      state.messages.set(conversationId, updatedList);
+    }
+
+    if (conversationId === state.currentConversationId) {
+      renderPinnedBar();
+      if (changed) {
+        renderMessages(conversationId);
+      }
+    }
+  }
+
+  async function fetchPinnedMessages(conversationId) {
+    if (!conversationId) return;
+    try {
+      const data = await apiRequest(`/api/conversations/${conversationId}/pins`);
+      applyPinnedMessages(conversationId, data?.pins || []);
+    } catch (error) {
+      console.warn('Не удалось загрузить закрепы', error);
+    }
+  }
+
+  function renderPinnedBar() {
+    if (!elements.pinnedBar) return;
+    const conversationId = state.currentConversationId;
+    const pins = conversationId ? state.pins.get(conversationId) || [] : [];
+    if (!pins.length) {
+      elements.pinnedBar.innerHTML = '';
+      elements.pinnedBar.classList.add('hidden');
+      return;
+    }
+    elements.pinnedBar.classList.remove('hidden');
+    elements.pinnedBar.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    pins.forEach((pin) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'pinned-item';
+      button.dataset.messageId = String(pin.id);
+
+      const icon = document.createElement('span');
+      icon.className = 'pinned-icon';
+      icon.textContent = '📌';
+
+      const content = document.createElement('div');
+      content.className = 'pinned-content';
+
+      const author = document.createElement('strong');
+      author.textContent = pin.user?.displayName || pin.user?.username || 'Сообщение';
+      const preview = document.createElement('span');
+      preview.textContent = buildMessageExcerpt(pin) || 'Без текста';
+
+      const meta = document.createElement('span');
+      meta.className = 'pinned-meta';
+      if (pin.pinnedBy?.displayName || pin.pinnedBy?.username) {
+        meta.textContent = `Закрепил ${pin.pinnedBy.displayName || `@${pin.pinnedBy.username}`}`;
+      } else {
+        meta.textContent = formatDate(pin.pinnedAt);
+      }
+
+      content.append(author, preview, meta);
+      button.append(icon, content);
+      button.addEventListener('click', async () => {
+        const conversationId = pin.conversationId || state.currentConversationId;
+        if (!conversationId) return;
+        const existingNode = elements.messageList?.querySelector(`[data-message-id="${pin.id}"]`);
+        if (!existingNode) {
+          const previousHeight = elements.messageScroller?.scrollHeight || 0;
+          try {
+            await loadMessages(conversationId, { before: pin.id + 1 });
+            renderMessages(conversationId);
+            if (elements.messageScroller) {
+              const diff = elements.messageScroller.scrollHeight - previousHeight;
+              elements.messageScroller.scrollTop += diff;
+            }
+          } catch (error) {
+            showToast('Не удалось загрузить сообщение', 'error');
+            return;
+          }
+        }
+        const node = elements.messageList?.querySelector(`[data-message-id="${pin.id}"]`);
+        if (!node) {
+          showToast('Сообщение не найдено', 'error');
+          return;
+        }
+        requestAnimationFrame(() => focusMessage(pin.id));
+      });
+      fragment.append(button);
+    });
+    elements.pinnedBar.append(fragment);
+  }
+
+  function openForwardModal(message) {
+    if (!elements.forwardModal || !message) return;
+    state.forward.messageId = message.id;
+    if (elements.forwardForm) {
+      elements.forwardForm.reset();
+    }
+    populateForwardTargets(message);
+    openModal(elements.forwardModal);
+  }
+
+  function populateForwardTargets(message) {
+    if (!elements.forwardConversationSelect) return;
+    const select = elements.forwardConversationSelect;
+    select.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = state.conversationOrder.length ? 'Выберите беседу' : 'Беседы недоступны';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    select.append(placeholder);
+    state.conversationOrder.forEach((conversationId) => {
+      const conversation = state.conversations.get(conversationId);
+      if (!conversation) return;
+      const option = document.createElement('option');
+      option.value = String(conversation.id);
+      option.textContent = conversationDisplay(conversation).title;
+      if (conversation.id === state.currentConversationId) {
+        option.textContent += ' • текущая';
+      }
+      select.append(option);
+    });
+    select.required = false;
+    if (state.currentConversationId) {
+      select.value = String(state.currentConversationId);
+    }
+    if (elements.forwardUserInput) {
+      elements.forwardUserInput.value = '';
+    }
+    if (elements.forwardCommentInput) {
+      const excerpt = buildMessageExcerpt(message);
+      elements.forwardCommentInput.placeholder = excerpt ? `Добавьте комментарий к «${excerpt}»` : 'Необязательный текст';
+    }
+  }
+
+  function closeForwardModal() {
+    state.forward.messageId = null;
+    if (elements.forwardForm) {
+      elements.forwardForm.reset();
+    }
+    if (elements.forwardCommentInput) {
+      elements.forwardCommentInput.placeholder = 'Необязательный текст';
+    }
+    closeModal(elements.forwardModal);
+  }
+
+  async function submitForwardForm(event) {
+    event.preventDefault();
+    if (!state.forward.messageId) {
+      showToast('Сообщение не выбрано для пересылки', 'error');
+      return;
+    }
+    const conversationId = elements.forwardConversationSelect?.value ? Number(elements.forwardConversationSelect.value) : null;
+    const username = elements.forwardUserInput?.value.trim() || '';
+    const content = elements.forwardCommentInput?.value.trim() || '';
+    if (!conversationId && !username) {
+      showToast('Выберите беседу или укажите пользователя', 'error');
+      return;
+    }
+    const payload = {};
+    if (conversationId) payload.conversationId = conversationId;
+    if (username) payload.username = username;
+    if (content) payload.content = content;
+
+    try {
+      const response = await apiRequest(`/api/messages/${state.forward.messageId}/forward`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (response?.conversation) {
+        upsertConversations([response.conversation]);
+      }
+      if (response?.message) {
+        addMessage(response.message);
+      }
+      closeForwardModal();
+      showToast('Сообщение переслано', 'success');
+    } catch (error) {
+      showToast(error.message || 'Не удалось переслать сообщение', 'error');
+    }
+  }
+
+
   if (elements.reactionMenu) {
     elements.reactionMenu.addEventListener('click', (event) => {
       const target = event.target.closest('[data-emoji]');
@@ -2897,17 +3474,50 @@
     });
   }
 
+  if (elements.selectionForwardBtn) {
+    elements.selectionForwardBtn.addEventListener('click', () => {
+      const [first] = Array.from(state.selectedMessages);
+      if (!first) {
+        showToast('Нет выбранных сообщений', 'info');
+        return;
+      }
+      const message = findMessage(first);
+      if (!message) {
+        showToast('Сообщение не найдено', 'error');
+        return;
+      }
+      openForwardModal(message);
+    });
+  }
+
+  if (elements.selectionClearBtn) {
+    elements.selectionClearBtn.addEventListener('click', () => clearSelectedMessages());
+  }
+
+  if (elements.forwardForm) {
+    elements.forwardForm.addEventListener('submit', submitForwardForm);
+  }
+
   document.addEventListener('click', (event) => {
-    if (state.reactionMenu.messageId === null) return;
-    if (elements.reactionMenu?.contains(event.target)) return;
-    if (event.target.closest('.action-react')) return;
-    closeReactionMenu();
+    if (state.reactionMenu.messageId !== null) {
+      if (!elements.reactionMenu?.contains(event.target) && !event.target.closest('.action-react')) {
+        closeReactionMenu();
+      }
+    }
+    if (state.contextMenu.messageId !== null) {
+      if (!elements.messageContextMenu?.contains(event.target)) {
+        closeContextMenu();
+      }
+    }
   });
 
   if (elements.messageScroller) {
     elements.messageScroller.addEventListener('scroll', () => {
       if (state.reactionMenu.messageId !== null) {
         closeReactionMenu();
+      }
+      if (state.contextMenu.messageId !== null) {
+        closeContextMenu();
       }
     });
   }
@@ -2985,12 +3595,21 @@
   elements.detailsToggleBtn.addEventListener('click', () => toggleDetails());
   elements.detailsCloseBtn.addEventListener('click', () => toggleDetails(false));
 
-  window.addEventListener('resize', () => syncDetailsPanel());
+  window.addEventListener('resize', () => {
+    syncDetailsPanel();
+    if (state.contextMenu.messageId !== null) {
+      closeContextMenu();
+    }
+  });
 
   document.addEventListener('keydown', (event) => {
     if (event.defaultPrevented || event.key !== 'Escape') return;
     if (state.reactionMenu.messageId !== null) {
       closeReactionMenu();
+      return;
+    }
+    if (state.contextMenu.messageId !== null) {
+      closeContextMenu();
       return;
     }
     if (elements.mediaViewer && !elements.mediaViewer.classList.contains('hidden')) {
@@ -3002,10 +3621,23 @@
       elements.profileModal,
       elements.groupModal,
       elements.directModal,
-      elements.joinModal
+      elements.joinModal,
+      elements.forwardModal,
+      elements.folderModal,
+      elements.conversationModal,
+      elements.favoritesModal
     ].find((modal) => modal && !modal.classList.contains('hidden'));
     if (activeModal) {
-      closeModal(activeModal);
+      if (activeModal === elements.forwardModal) {
+        closeForwardModal();
+      } else {
+        closeModal(activeModal);
+      }
+      return;
+    }
+    if (state.selectedMessages.size) {
+      clearSelectedMessages();
+      return;
     }
   });
 
@@ -3086,10 +3718,20 @@
       state.readTimer = null;
     }
     closeReactionMenu();
+    closeContextMenu();
+    if (elements.forwardModal && !elements.forwardModal.classList.contains('hidden')) {
+      closeForwardModal();
+    }
     if (state.recording) {
       stopRecording({ cancel: true });
     }
     state.currentConversationId = conversationId;
+    clearSelectedMessages();
+    if (state.replyTo?.conversationId !== conversationId) {
+      clearReplyTarget();
+    } else {
+      renderReplyPreview();
+    }
     const current = state.conversations.get(conversationId);
     if (current && current.unreadCount) {
       state.conversations.set(conversationId, { ...current, unreadCount: 0 });
@@ -3105,6 +3747,8 @@
   fetchMembers(conversationId).then(renderMembers);
   updateConversationHeader(conversationId);
   renderConversationFolders(conversationId);
+  renderPinnedBar();
+  fetchPinnedMessages(conversationId);
     loadMessages(conversationId)
       .then(() => {
         renderMessages(conversationId);
@@ -3159,6 +3803,9 @@
     if (index >= 0) {
       list[index] = message;
       state.messages.set(message.conversationId, list);
+      if (state.selectedMessages.delete(message.id)) {
+        renderSelectionState();
+      }
       if (state.currentConversationId === message.conversationId) {
         renderMessages(message.conversationId);
       }
@@ -3213,6 +3860,7 @@
     socket.on('message:created', (message) => addMessage(message));
     socket.on('message:updated', (message) => addMessage(message));
     socket.on('message:deleted', (message) => removeMessage(message));
+    socket.on('conversation:pins', ({ conversationId, pins }) => applyPinnedMessages(conversationId, pins || []));
 
     socket.on('typing:update', ({ conversationId, userId, isTyping }) => {
       if (userId === state.user?.id) return;
@@ -3282,6 +3930,7 @@
   });
 
   syncDetailsPanel();
+  renderSelectionState();
 
   function markConversationAsRead(conversationId) {
     if (!conversationId) return;

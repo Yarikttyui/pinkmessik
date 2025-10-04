@@ -460,7 +460,9 @@ body.call-open {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-right: 6px;
+  padding-right: 0;
+  padding-left: 12px;
+  align-items: flex-end;
 }
 
 .conversation-item {
@@ -474,6 +476,9 @@ body.call-open {
   align-items: center;
   cursor: pointer;
   transition: border 0.2s, transform 0.2s, box-shadow 0.2s;
+  width: 92%;
+  max-width: 320px;
+  margin-left: auto;
 }
 
 .conversation-item:hover {
@@ -514,6 +519,19 @@ body.call-open {
   font-size: 12px;
   text-align: center;
   font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+  .conversation-list {
+    padding-left: 0;
+    padding-right: 6px;
+    align-items: stretch;
+  }
+
+  .conversation-item {
+    width: 100%;
+    max-width: none;
+  }
 }
 
 .chat {
@@ -638,6 +656,23 @@ body.call-open {
   box-shadow: 0 0 0 3px rgba(247, 37, 133, 0.35), 0 16px 30px rgba(247, 37, 133, 0.2);
 }
 
+.message-author-avatar {
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  outline: none;
+}
+
+.message-author-avatar:hover {
+  transform: translateY(-1px) scale(1.02);
+  box-shadow: 0 12px 24px rgba(53, 36, 63, 0.18);
+}
+
+.message-author-avatar:focus-visible {
+  outline: 3px solid rgba(247, 37, 133, 0.45);
+  outline-offset: 4px;
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.9);
+}
+
 .message.own {
   grid-template-columns: 1fr auto;
 }
@@ -666,6 +701,49 @@ body.call-open {
 
 .message.own .meta {
   color: rgba(255, 255, 255, 0.75);
+}
+
+.message-author-name {
+  font-weight: 600;
+  color: rgba(53, 36, 63, 0.85);
+  cursor: pointer;
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.message-author-name::after {
+  content: '↗';
+  font-size: 11px;
+  opacity: 0;
+  transform: translateY(-1px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.message-author-name:hover {
+  color: var(--pink-600);
+}
+
+.message-author-name:hover::after {
+  opacity: 0.75;
+  transform: translate(1px, -1px);
+}
+
+.message-author-name:focus-visible {
+  outline: 2px solid rgba(247, 37, 133, 0.45);
+  outline-offset: 3px;
+  color: var(--pink-600);
+}
+
+.message.own .message-author-name {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.message.own .message-author-name:hover,
+.message.own .message-author-name:focus-visible {
+  color: #fff;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
 }
 
 .message .text {

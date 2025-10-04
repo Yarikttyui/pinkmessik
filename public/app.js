@@ -1867,6 +1867,31 @@
     }
     renderSelectionState();
   }
+
+  function getConversationMember(conversationId, userId) {
+    if (!conversationId || !userId) return null;
+    const members = state.membersCache.get(conversationId) || [];
+    return members.find((member) => member.id === userId) || null;
+  }
+
+  async function openProfileFromMessage(message) {
+    if (!message?.conversationId || !message.user?.id) return;
+    let member = getConversationMember(message.conversationId, message.user.id);
+    if (!member) {
+      try {
+        const members = await fetchMembers(message.conversationId);
+        member = members.find((candidate) => candidate.id === message.user.id) || null;
+      } catch (error) {
+        console.warn('Не удалось загрузить участников беседы', error);
+      }
+    }
+    if (member) {
+      openMemberProfile(member);
+    } else {
+      showToast('Профиль участника пока недоступен', 'info');
+    }
+  }
+
   function renderMessage(message) {
     const isOwn = message.user?.id === state.user?.id;
     const item = document.createElement('article');
@@ -1884,6 +1909,18 @@
       color: message.user?.avatarColor,
       text: initials(message.user?.displayName || message.user?.username)
     });
+    avatar.classList.add('message-author-avatar');
+    avatar.tabIndex = 0;
+    avatar.setAttribute('role', 'button');
+    avatar.setAttribute('aria-label', `Открыть профиль ${message.user?.displayName || message.user?.username || 'участника'}`);
+    const handleProfileOpen = () => openProfileFromMessage(message);
+    avatar.addEventListener('click', handleProfileOpen);
+    avatar.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        handleProfileOpen();
+      }
+    });
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
@@ -1891,7 +1928,18 @@
     const meta = document.createElement('div');
     meta.className = 'meta';
     const author = document.createElement('span');
+    author.className = 'message-author-name';
+    author.tabIndex = 0;
+    author.setAttribute('role', 'link');
+    author.setAttribute('aria-label', `Открыть профиль ${message.user?.displayName || message.user?.username || 'участника'}`);
     author.textContent = message.user?.displayName || message.user?.username || '—';
+    author.addEventListener('click', handleProfileOpen);
+    author.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        handleProfileOpen();
+      }
+    });
     const time = document.createElement('span');
     time.textContent = formatTime(message.createdAt);
     meta.append(author, time);

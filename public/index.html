@@ -72,22 +72,6 @@
         <button class="ghost" id="joinByCodeBtn">Присоединиться по коду</button>
         <button class="ghost" id="newDirectBtn">+ Личный чат</button>
       </div>
-
-      <div class="sidebar-search">
-        <input type="text" id="conversationFilter" placeholder="Поиск беседы или пользователя">
-      </div>
-      <div class="search-results hidden" id="searchResults"></div>
-      <div class="folder-panel" id="folderPanel">
-        <div class="folder-panel-header">
-          <span>Папки</span>
-          <button class="ghost tiny" id="folderCreateBtn">+ Новая</button>
-        </div>
-        <div class="folder-chips" id="folderChips">
-          <button type="button" class="chip active" data-folder="all" id="folderAllBtn">Все беседы</button>
-          <div class="folder-chips-list" id="folderList"></div>
-        </div>
-      </div>
-      <div class="conversation-list" id="conversationList"></div>
     </aside>
 
     <main class="chat">
@@ -166,6 +150,26 @@
         </form>
       </section>
     </main>
+
+    <section class="conversation-panel" id="conversationPanel">
+      <div class="conversation-panel-inner">
+        <div class="sidebar-search">
+          <input type="text" id="conversationFilter" placeholder="Поиск беседы или пользователя">
+        </div>
+        <div class="search-results hidden" id="searchResults"></div>
+        <div class="folder-panel" id="folderPanel">
+          <div class="folder-panel-header">
+            <span>Папки</span>
+            <button class="ghost tiny" id="folderCreateBtn">+ Новая</button>
+          </div>
+          <div class="folder-chips" id="folderChips">
+            <button type="button" class="chip active" data-folder="all" id="folderAllBtn">Все беседы</button>
+            <div class="folder-chips-list" id="folderList"></div>
+          </div>
+        </div>
+        <div class="conversation-list" id="conversationList"></div>
+      </div>
+    </section>
 
     <aside class="details-panel hidden" id="detailsPanel">
       <div class="details-header">

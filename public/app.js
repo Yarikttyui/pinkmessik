@@ -620,7 +620,7 @@
           const hasDomain = Boolean(domain);
           elements.callToggleBtn.title = hasDomain
             ? 'Созвон'
-            : 'Добавьте JITSI_DOMAIN в .env, чтобы подключить свой SFU';
+            : 'DOMAIN';
         }
       }
     } catch (error) {
@@ -2762,7 +2762,7 @@
       return;
     }
     if (!getJitsiHost()) {
-      showToast('Адрес SFU не настроен. Добавьте JITSI_DOMAIN в .env', 'error');
+      showToast('Адрес SFU не настроен.', 'error');
       return;
     }
     try {
